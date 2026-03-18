@@ -212,13 +212,17 @@ export async function connectWorkspace(
     })
 
     // Messages → the main payload. Both inbound and outbound.
+    // HISTORY_SYNC_CUTOFF_DAYS controls how far back to sync (default: 90 days, 0 = no limit)
+    const cutoffDays = parseInt(process.env['HISTORY_SYNC_CUTOFF_DAYS'] ?? '90', 10)
+    const cutoffTs = cutoffDays > 0 ? Math.floor(Date.now() / 1000) - (cutoffDays * 86400) : 0
+
     sock.ev.on('messaging-history.set', ({ messages: historyMsgs, isLatest }) => {
       logger.info(
-        { workspaceId, count: historyMsgs.length, isLatest },
+        { workspaceId, count: historyMsgs.length, isLatest, cutoffDays },
         'History: messaging-history.set received'
       )
-      // Process all messages (both directions) to build full conversation history
       let processed = 0
+      let skippedOld = 0
       for (const msg of historyMsgs) {
         if (!msg.message) continue
         if (!msg.key.remoteJid) continue
@@ -227,11 +231,20 @@ export async function connectWorkspace(
         if (msg.key.remoteJid.includes('@broadcast')) continue
         if (msg.key.remoteJid.includes('@lid')) continue
 
+        // Skip messages older than cutoff date
+        const msgTs = typeof msg.messageTimestamp === 'number'
+          ? msg.messageTimestamp
+          : Number(msg.messageTimestamp ?? 0)
+        if (cutoffTs > 0 && msgTs > 0 && msgTs < cutoffTs) {
+          skippedOld++
+          continue
+        }
+
         ws.onMessage(msg as WAMessage)
         processed++
       }
       logger.info(
-        { workspaceId, processed, total: historyMsgs.length, isLatest },
+        { workspaceId, processed, skippedOld, total: historyMsgs.length, isLatest },
         'History: batch processing complete'
       )
     })
