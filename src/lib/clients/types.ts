@@ -13,7 +13,13 @@ export type LifecycleStatus = (typeof LIFECYCLE_STATUSES)[number]
 
 export const lifecycleStatusSchema = z.enum(LIFECYCLE_STATUSES)
 
-export const e164Schema = z.string().regex(/^\+[1-9]\d{7,14}$/, 'Must be E.164 format')
+const E164_REGEX = /^\+[1-9]\d{7,14}$/
+
+export const e164Schema = z.string().regex(E164_REGEX, 'Must be E.164 format')
+
+export function isValidE164(phone: string): boolean {
+  return E164_REGEX.test(phone)
+}
 
 export interface Client {
   id: string

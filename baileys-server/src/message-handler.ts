@@ -78,17 +78,27 @@ export async function handleInboundMessage(
   msg: WAMessage
 ): Promise<void> {
   const wamid = msg.key.id
-  const fromJid = msg.key.remoteJid
+  const remoteJid = msg.key.remoteJid
+  const isFromMe = msg.key.fromMe ?? false
 
-  if (!wamid || !fromJid) {
+  if (!wamid || !remoteJid) {
     logger.warn({ workspaceId }, 'Message missing id or remoteJid, skipping')
     return
   }
 
   // Skip group messages — only process 1:1 chats
-  if (fromJid.includes('@g.us')) return
+  if (remoteJid.includes('@g.us')) return
 
-  const phone = normalizePhone(fromJid)
+  let phone: string
+  try {
+    phone = normalizePhone(remoteJid)
+  } catch {
+    logger.debug({ workspaceId, wamid, remoteJid }, 'Could not normalize phone, skipping')
+    return
+  }
+
+  const direction = isFromMe ? 'outbound' : 'inbound'
+  const senderType = isFromMe ? 'staff' : 'client'
   const { text, mediaType } = extractMessageContent(msg)
 
   // Skip if no content at all (e.g. protocol messages, reactions)
@@ -156,45 +166,46 @@ export async function handleInboundMessage(
       .insert({
         conversation_id: conversation.id as string,
         workspace_id: workspaceId,
-        direction: 'inbound',
+        direction,
         content: text,
         media_type: mediaType,
-        sender_type: 'client',
+        sender_type: senderType,
         delivery_status: 'delivered',
         wamid,
-        is_read: false,
+        is_read: isFromMe, // outbound messages are already "read"
       })
       .select('id')
       .single()
 
     if (msgError) throw msgError
 
-    // Step 5: Enqueue to pgmq for async processing (context assembly + LLM)
-    const { error: queueError } = await supabase.rpc('pgmq_send', {
-      queue_name: 'inbound_messages',
-      msg: {
-        message_id: savedMsg.id as string,
-        workspace_id: workspaceId,
-        client_id: client.id as string,
-        conversation_id: conversation.id as string,
-        phone,
-        content: text,
-        media_type: mediaType,
-        wamid,
-      },
-    })
+    // Step 5: Enqueue to pgmq for async processing (inbound only — outbound/history don't need LLM)
+    if (direction === 'inbound') {
+      const { error: queueError } = await supabase.rpc('pgmq_send', {
+        queue_name: 'inbound_messages',
+        msg: {
+          message_id: savedMsg.id as string,
+          workspace_id: workspaceId,
+          client_id: client.id,
+          conversation_id: conversation.id as string,
+          phone,
+          content: text,
+          media_type: mediaType,
+          wamid,
+        },
+      })
 
-    if (queueError) {
-      // Message is saved — just not queued. pg_cron safety net will pick it up.
-      logger.error(
-        { workspaceId, wamid, error: queueError },
-        'Failed to enqueue message to pgmq'
-      )
+      if (queueError) {
+        logger.error(
+          { workspaceId, wamid, error: queueError },
+          'Failed to enqueue message to pgmq'
+        )
+      }
     }
 
     logger.info(
-      { workspaceId, wamid, clientId: client.id, msgId: savedMsg.id },
-      'Inbound message processed'
+      { workspaceId, wamid, direction, clientId: client.id, msgId: savedMsg.id },
+      'Message processed'
     )
   } catch (err) {
     logger.error({ workspaceId, wamid, error: err }, 'Failed to process inbound message')

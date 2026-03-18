@@ -5,6 +5,7 @@ import { logger } from './logger.js'
 import { healthRouter } from './health.js'
 import { qrRouter } from './qr-handler.js'
 import { sendRouter } from './send-handler.js'
+import { historyRouter } from './history-handler.js'
 import { connectWorkspace } from './socket-manager.js'
 import { handleInboundMessage } from './message-handler.js'
 
@@ -13,7 +14,10 @@ const app = express()
 app.use(cors())
 app.use(express.json())
 
-// API secret middleware — skip auth for /health (used by Railway health checks)
+// TODO: QR scan page will be served by Next.js staff app (Sprint 2, F-01 onboarding)
+// The /qr/:workspaceId SSE endpoint provides the QR data for the frontend to render.
+
+// API secret middleware — skip auth for /health
 app.use((req: Request, res: Response, next: NextFunction): void => {
   if (req.path === '/health') {
     next()
@@ -32,6 +36,7 @@ app.use((req: Request, res: Response, next: NextFunction): void => {
 app.use(healthRouter)
 app.use(qrRouter)
 app.use(sendRouter)
+app.use(historyRouter)
 
 // POST /reconnect/:workspaceId — Force reconnection for a workspace
 app.post('/reconnect/:workspaceId', async (req: Request, res: Response): Promise<void> => {

@@ -1,4 +1,5 @@
 import makeWASocket, {
+  Browsers,
   DisconnectReason,
   fetchLatestBaileysVersion,
   type WAMessage,
@@ -80,6 +81,9 @@ export async function connectWorkspace(
     const sock = makeWASocket({
       version,
       auth: state,
+      syncFullHistory: true,
+      // Desktop browser config = receive MORE message history on first sync
+      browser: Browsers.macOS('Desktop'),
       // Baileys logger expects a pino-like interface; cast to satisfy the type
       logger: logger.child({ module: 'baileys', workspaceId }) as unknown as Parameters<typeof makeWASocket>[0]['logger'],
     })
@@ -151,6 +155,85 @@ export async function connectWorkspace(
           ws.onMessage(msg as WAMessage)
         }
       }
+    })
+
+    // ─── History Sync (fires on FIRST pairing only) ───────────────
+    // Baileys delivers contacts, chats, and messages in batches.
+    // We process all of them to build the full client database.
+
+    // Contacts → create client records with names
+    sock.ev.on('contacts.upsert', (contacts) => {
+      logger.info({ workspaceId, count: contacts.length }, 'History: contacts.upsert received')
+      for (const contact of contacts) {
+        const jid = contact.id
+        if (!jid || jid.includes('@g.us') || jid.includes('@broadcast') || jid.includes('@lid')) continue
+        const phone = jid.split('@')[0]
+        if (!phone) continue
+
+        // Upsert client with contact name.
+        // First try insert, then update name if client already exists.
+        const e164 = `+${phone}`
+        const rawName = contact.name ?? contact.notify ?? null
+        const contactName = rawName ? `${e164}-${rawName}` : e164
+        void (async () => {
+          const { error: insertErr } = await supabase
+            .from('clients')
+            .upsert(
+              { workspace_id: workspaceId, phone: e164, full_name: contactName, lifecycle_status: 'open' },
+              { onConflict: 'workspace_id,phone', ignoreDuplicates: true }
+            )
+          if (insertErr && insertErr.code !== '23505') {
+            logger.error({ workspaceId, phone: e164, error: insertErr }, 'Failed to insert contact')
+          }
+          // Update name on existing client (ignoreDuplicates skips the row, so update separately)
+          await supabase
+            .from('clients')
+            .update({ full_name: contactName })
+            .eq('workspace_id', workspaceId)
+            .eq('phone', e164)
+        })()
+      }
+    })
+
+    // Chats → create conversations for each chat
+    sock.ev.on('chats.upsert', (chats) => {
+      logger.info({ workspaceId, count: chats.length }, 'History: chats.upsert received')
+      // Chats are processed indirectly — when messages arrive, they create conversations.
+      // Log for observability.
+      for (const chat of chats) {
+        logger.debug({
+          workspaceId,
+          chatId: chat.id,
+          name: chat.name,
+          unreadCount: chat.unreadCount,
+          lastMsgTimestamp: chat.conversationTimestamp,
+        }, 'History chat')
+      }
+    })
+
+    // Messages → the main payload. Both inbound and outbound.
+    sock.ev.on('messaging-history.set', ({ messages: historyMsgs, isLatest }) => {
+      logger.info(
+        { workspaceId, count: historyMsgs.length, isLatest },
+        'History: messaging-history.set received'
+      )
+      // Process all messages (both directions) to build full conversation history
+      let processed = 0
+      for (const msg of historyMsgs) {
+        if (!msg.message) continue
+        if (!msg.key.remoteJid) continue
+        // Skip group, broadcast, and LID messages
+        if (msg.key.remoteJid.includes('@g.us')) continue
+        if (msg.key.remoteJid.includes('@broadcast')) continue
+        if (msg.key.remoteJid.includes('@lid')) continue
+
+        ws.onMessage(msg as WAMessage)
+        processed++
+      }
+      logger.info(
+        { workspaceId, processed, total: historyMsgs.length, isLatest },
+        'History: batch processing complete'
+      )
     })
   }
 
