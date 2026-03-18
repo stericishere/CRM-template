@@ -69,30 +69,40 @@ export async function useSupabaseAuthState(
     ): Promise<{ [id: string]: SignalDataTypeMap[T] }> => {
       const result: Record<string, SignalDataTypeMap[T]> = {}
 
+      // Separate cache hits from misses
+      const missingKeys: string[] = []
+      const missingIds: string[] = []
+
       for (const id of ids) {
         const cacheKey = `${type}-${id}`
-        let value = cache.get(cacheKey) as SignalDataTypeMap[T] | undefined
+        const cached = cache.get(cacheKey) as SignalDataTypeMap[T] | undefined
+        if (cached !== undefined) {
+          result[id] = cached
+        } else {
+          missingKeys.push(cacheKey)
+          missingIds.push(id)
+        }
+      }
 
-        if (value === undefined) {
-          // Cache miss — fetch from Supabase
-          const { data } = await supabase
-            .from('baileys_auth')
-            .select('value')
-            .eq('workspace_id', workspaceId)
-            .eq('key', cacheKey)
-            .single()
+      // Batch fetch all cache misses in a single query
+      if (missingKeys.length > 0) {
+        const { data } = await supabase
+          .from('baileys_auth')
+          .select('key, value')
+          .eq('workspace_id', workspaceId)
+          .in('key', missingKeys)
 
-          if (data) {
-            value = JSON.parse(
-              JSON.stringify(data.value),
+        if (data) {
+          for (const row of data) {
+            const value = JSON.parse(
+              JSON.stringify(row.value),
               BufferJSON.reviver
             ) as SignalDataTypeMap[T]
-            cache.set(cacheKey, value)
+            cache.set(row.key as string, value)
+            // Extract the id from the key (format: "type-id")
+            const id = (row.key as string).slice(type.length + 1)
+            result[id] = value
           }
-        }
-
-        if (value !== undefined) {
-          result[id] = value
         }
       }
 

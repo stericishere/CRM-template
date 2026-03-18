@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express'
 import { z } from 'zod'
 import { getSocket } from './socket-manager.js'
 import { logger } from './logger.js'
+import { e164ToJid, isValidE164 } from './phone-utils.js'
 
 export const sendRouter = Router()
 
@@ -38,8 +39,7 @@ sendRouter.post('/send', async (req: Request, res: Response): Promise<void> => {
     return
   }
 
-  // Convert E.164 to Baileys JID: strip '+' and append @s.whatsapp.net
-  const jid = `${to.slice(1)}@s.whatsapp.net`
+  const jid = e164ToJid(to)
 
   try {
     const result = await socket.sendMessage(jid, { text: content })

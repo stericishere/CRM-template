@@ -49,6 +49,7 @@ export async function GET(request: NextRequest) {
         .eq('direction', 'inbound')
         .eq('is_read', false)
         .order('created_at', { ascending: false })
+        .limit(5000) // Safety cap to prevent unbounded memory usage
 
       if (fallbackError) {
         console.error('[GET /notifications/unread-count] fallback error', fallbackError.message)

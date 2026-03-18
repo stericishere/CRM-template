@@ -5,7 +5,7 @@ import { logger } from './logger.js'
 import { healthRouter } from './health.js'
 import { qrRouter } from './qr-handler.js'
 import { sendRouter } from './send-handler.js'
-import { connectWorkspace } from './socket-manager.js'
+import { connectWorkspace, disconnectWorkspace, getAllStatuses } from './socket-manager.js'
 import { handleInboundMessage } from './message-handler.js'
 
 const app = express()
@@ -53,14 +53,21 @@ app.post('/reconnect/:workspaceId', async (req: Request, res: Response): Promise
   }
 })
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  logger.info('SIGTERM received, shutting down...')
-  process.exit(0)
+// Graceful shutdown — close all WebSocket connections before exiting
+const server = app.listen(config.PORT, () => {
+  logger.info({ port: config.PORT }, 'Baileys server started')
 })
 
-app.listen(config.PORT, () => {
-  logger.info({ port: config.PORT }, 'Baileys server started')
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM received, shutting down...')
+  const statuses = getAllStatuses()
+  const disconnects = Object.keys(statuses).map((wsId) => disconnectWorkspace(wsId))
+  void Promise.allSettled(disconnects).then(() => {
+    server.close(() => {
+      logger.info('Server closed')
+      process.exit(0)
+    })
+  })
 })
 
 export { app }

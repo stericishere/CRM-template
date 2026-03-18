@@ -1,6 +1,7 @@
 import type { WAMessage } from '@whiskeysockets/baileys'
 import { supabase } from './supabase.js'
 import { logger } from './logger.js'
+import { jidToE164 } from './phone-utils.js'
 
 /**
  * Inbound message processing pipeline.
@@ -15,15 +16,6 @@ import { logger } from './logger.js'
 
 /** PostgreSQL unique constraint violation code */
 const PG_UNIQUE_VIOLATION = '23505'
-
-/**
- * Normalize a Baileys JID (e.g. "85291234567@s.whatsapp.net") to E.164 ("+85291234567").
- */
-function normalizePhone(jid: string): string {
-  const number = jid.split('@')[0]
-  if (!number) throw new Error(`Invalid JID: ${jid}`)
-  return `+${number}`
-}
 
 /**
  * Extract text content and media type from a Baileys WAMessage.
@@ -88,7 +80,7 @@ export async function handleInboundMessage(
   // Skip group messages — only process 1:1 chats
   if (fromJid.includes('@g.us')) return
 
-  const phone = normalizePhone(fromJid)
+  const phone = jidToE164(fromJid)
   const { text, mediaType } = extractMessageContent(msg)
 
   // Skip if no content at all (e.g. protocol messages, reactions)
@@ -112,49 +104,91 @@ export async function handleInboundMessage(
     }
 
     // Step 2: Find or create client by (workspace_id, phone)
-    const { data: client, error: clientError } = await supabase
+    // Use ignoreDuplicates: true to avoid overwriting existing lifecycle_status
+    const { data: upsertedClient, error: upsertError } = await supabase
       .from('clients')
       .upsert(
         { workspace_id: workspaceId, phone, lifecycle_status: 'open' },
-        { onConflict: 'workspace_id,phone', ignoreDuplicates: false }
+        { onConflict: 'workspace_id,phone', ignoreDuplicates: true }
       )
       .select('id, lifecycle_status')
-      .single()
+      .maybeSingle()
 
-    if (clientError) throw clientError
+    let client: { id: string; lifecycle_status: string }
+    if (upsertError) throw upsertError
 
-    // Reactivate inactive client, or just update last_contacted_at
+    if (upsertedClient) {
+      client = { id: upsertedClient.id as string, lifecycle_status: upsertedClient.lifecycle_status as string }
+    } else {
+      // Client already exists — fetch it
+      const { data: existing, error: fetchErr } = await supabase
+        .from('clients')
+        .select('id, lifecycle_status')
+        .eq('workspace_id', workspaceId)
+        .eq('phone', phone)
+        .is('deleted_at', null)
+        .single()
+      if (fetchErr) throw fetchErr
+      client = { id: existing.id as string, lifecycle_status: existing.lifecycle_status as string }
+    }
+
+    // Step 3: Update client + find/create conversation in parallel
+    // (client update is fire-and-forget, conversation upsert is needed for Step 4)
+    const now = new Date().toISOString()
     const clientUpdate =
       client.lifecycle_status === 'inactive'
-        ? { lifecycle_status: 'open', last_contacted_at: new Date().toISOString() }
-        : { last_contacted_at: new Date().toISOString() }
+        ? { lifecycle_status: 'open', last_contacted_at: now }
+        : { last_contacted_at: now }
 
-    await supabase.from('clients').update(clientUpdate).eq('id', client.id as string)
+    const [, convResult] = await Promise.all([
+      // Fire-and-forget: update client timestamps (don't block on result)
+      supabase.from('clients').update(clientUpdate).eq('id', client.id),
+      // Find or create conversation — don't overwrite existing state
+      supabase
+        .from('conversations')
+        .upsert(
+          {
+            workspace_id: workspaceId,
+            client_id: client.id,
+            state: 'idle',
+            last_message_at: now,
+            last_client_message_at: now,
+          },
+          { onConflict: 'client_id', ignoreDuplicates: true }
+        )
+        .select('id')
+        .maybeSingle(),
+    ])
 
-    // Step 3: Find or create conversation by client_id (unique)
-    const now = new Date().toISOString()
-    const { data: conversation, error: convError } = await supabase
-      .from('conversations')
-      .upsert(
-        {
-          workspace_id: workspaceId,
-          client_id: client.id as string,
-          state: 'idle',
-          last_message_at: now,
-          last_client_message_at: now,
-        },
-        { onConflict: 'client_id', ignoreDuplicates: false }
-      )
-      .select('id')
-      .single()
-
-    if (convError) throw convError
+    let conversationId: string
+    if (convResult.error) throw convResult.error
+    if (convResult.data) {
+      conversationId = convResult.data.id as string
+      // Update timestamps on existing conversation
+      await supabase
+        .from('conversations')
+        .update({ last_message_at: now, last_client_message_at: now })
+        .eq('id', conversationId)
+    } else {
+      // Conversation already exists — fetch it and update timestamps
+      const { data: existingConv, error: convFetchErr } = await supabase
+        .from('conversations')
+        .select('id')
+        .eq('client_id', client.id)
+        .single()
+      if (convFetchErr) throw convFetchErr
+      conversationId = existingConv.id as string
+      await supabase
+        .from('conversations')
+        .update({ last_message_at: now, last_client_message_at: now })
+        .eq('id', conversationId)
+    }
 
     // Step 4: Save message (triggers Supabase Realtime for staff UI)
     const { data: savedMsg, error: msgError } = await supabase
       .from('messages')
       .insert({
-        conversation_id: conversation.id as string,
+        conversation_id: conversationId,
         workspace_id: workspaceId,
         direction: 'inbound',
         content: text,
@@ -176,7 +210,7 @@ export async function handleInboundMessage(
         message_id: savedMsg.id as string,
         workspace_id: workspaceId,
         client_id: client.id as string,
-        conversation_id: conversation.id as string,
+        conversation_id: conversationId,
         phone,
         content: text,
         media_type: mediaType,

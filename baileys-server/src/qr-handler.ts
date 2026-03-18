@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express'
-import { connectWorkspace, getSocketStatus, setQrCallback } from './socket-manager.js'
+import { connectWorkspace, getSocketStatus, setQrCallback, clearQrCallback } from './socket-manager.js'
 import { handleInboundMessage } from './message-handler.js'
 import { logger } from './logger.js'
 
@@ -66,12 +66,14 @@ qrRouter.get('/qr/:workspaceId', async (req: Request, res: Response): Promise<vo
 
     if (currentStatus === 'connected') {
       clearInterval(statusInterval)
+      clearQrCallback(workspaceId)
       res.end()
     }
   }, STATUS_POLL_INTERVAL_MS)
 
-  // Clean up on client disconnect
+  // Clean up on client disconnect — clear QR callback to prevent writes to closed response
   req.on('close', () => {
     clearInterval(statusInterval)
+    clearQrCallback(workspaceId)
   })
 })

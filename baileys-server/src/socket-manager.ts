@@ -40,6 +40,7 @@ interface WorkspaceSocket {
 const sockets = new Map<string, WorkspaceSocket>()
 
 const MAX_RECONNECT_DELAY_MS = 60_000
+const MAX_RECONNECT_ATTEMPTS = 15
 
 export function getSocketStatus(workspaceId: string): {
   status: ConnectionStatus
@@ -113,7 +114,14 @@ export async function connectWorkspace(
             ? lastDisconnect.error.output.statusCode
             : undefined
 
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut
+        // Only reconnect if not logged out AND we have a known Boom status code
+        const isLoggedOut = statusCode === DisconnectReason.loggedOut
+        const isUnknownError = statusCode === undefined
+        const shouldReconnect = !isLoggedOut && ws.reconnectAttempts < MAX_RECONNECT_ATTEMPTS
+
+        if (isUnknownError) {
+          logger.warn({ workspaceId }, 'Unknown disconnect error (not Boom), will attempt reconnect')
+        }
 
         if (shouldReconnect) {
           ws.reconnectAttempts++
@@ -122,13 +130,13 @@ export async function connectWorkspace(
             MAX_RECONNECT_DELAY_MS
           )
           logger.info(
-            { workspaceId, delay, attempt: ws.reconnectAttempts },
+            { workspaceId, delay, attempt: ws.reconnectAttempts, maxAttempts: MAX_RECONNECT_ATTEMPTS },
             'Reconnecting...'
           )
           ws.reconnectTimer = setTimeout(() => {
             void startSocket()
           }, delay)
-        } else {
+        } else if (isLoggedOut) {
           logger.warn({ workspaceId }, 'Logged out — clearing auth state')
           void supabase
             .from('baileys_auth')
@@ -140,6 +148,13 @@ export async function connectWorkspace(
               }
             })
           sockets.delete(workspaceId)
+        } else {
+          // Max reconnect attempts exceeded
+          logger.error(
+            { workspaceId, attempts: ws.reconnectAttempts },
+            'Max reconnect attempts reached — giving up'
+          )
+          ws.status = 'disconnected'
         }
       }
     })
@@ -183,6 +198,13 @@ export function setQrCallback(
     ws.onQr = callback
     // If QR already available, fire immediately
     if (ws.qrCode) callback(ws.qrCode)
+  }
+}
+
+export function clearQrCallback(workspaceId: string): void {
+  const ws = sockets.get(workspaceId)
+  if (ws) {
+    ws.onQr = undefined
   }
 }
 
