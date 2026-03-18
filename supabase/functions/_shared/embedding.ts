@@ -1,5 +1,5 @@
 // supabase/functions/_shared/embedding.ts
-// OpenAI text-embedding-3-small (1536 dimensions)
+// Embeddings via OpenRouter (EMBEDDING_MODEL from env)
 // Used for knowledge base indexing and query-time search
 
 import OpenAI from 'https://esm.sh/openai@4'
@@ -11,17 +11,25 @@ let _client: OpenAI | null = null
 function getEmbeddingClient(): OpenAI {
   if (_client) return _client
 
-  const apiKey = Deno.env.get('OPENAI_API_KEY')
+  const apiKey = Deno.env.get('OPENROUTER_API_KEY')
   if (!apiKey) {
-    throw new Error('Missing OPENAI_API_KEY environment variable')
+    throw new Error('Missing OPENROUTER_API_KEY environment variable')
   }
 
-  _client = new OpenAI({ apiKey })
+  _client = new OpenAI({
+    apiKey,
+    baseURL: 'https://openrouter.ai/api/v1',
+    defaultHeaders: {
+      'HTTP-Referer': Deno.env.get('SITE_URL') ?? 'https://crm-template.vercel.app',
+      'X-Title': 'CRM Template',
+    },
+  })
   return _client
 }
 
 /**
- * Generate a 1536-dimensional embedding for a text string.
+ * Generate an embedding for a text string.
+ * Dimension depends on the model configured via EMBEDDING_MODEL env var.
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
   const client = getEmbeddingClient()
@@ -29,7 +37,6 @@ export async function generateEmbedding(text: string): Promise<number[]> {
   const response = await client.embeddings.create({
     model: EMBEDDING_MODEL,
     input: text.slice(0, 8000), // Hard limit to prevent token overflow
-    dimensions: 1536,
   })
 
   const embedding = response.data[0]?.embedding
@@ -48,7 +55,6 @@ export async function generateEmbeddings(
   const response = await client.embeddings.create({
     model: EMBEDDING_MODEL,
     input: texts.map(t => t.slice(0, 8000)),
-    dimensions: 1536,
   })
 
   return response.data
