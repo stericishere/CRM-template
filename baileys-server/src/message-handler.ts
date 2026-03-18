@@ -11,10 +11,25 @@ import { logger } from './logger.js'
  * └──────────┘   └───────────┘   │ client + │   └──────────┘   └─────────┘
  *                                │ convo    │
  *                                └──────────┘
+ *
+ * source: 'live'    — from messages.upsert (real-time delivery)
+ * source: 'history' — from messaging-history.set (initial sync)
+ *
+ * Business rules by source:
+ *   live inbound    → is_read=false, enqueue to pgmq, reactivate client
+ *   live outbound   → is_read=true,  no enqueue
+ *   history inbound → is_read=true,  no enqueue, no reactivation
+ *   history outbound→ is_read=true,  no enqueue
  */
 
 /** PostgreSQL unique constraint violation code */
 const PG_UNIQUE_VIOLATION = '23505'
+
+export type MessageSource = 'live' | 'history'
+
+export interface MessageContext {
+  source: MessageSource
+}
 
 /**
  * Normalize a Baileys JID (e.g. "85291234567@s.whatsapp.net") to E.164 ("+85291234567").
@@ -47,15 +62,10 @@ function extractMessageContent(msg: WAMessage): {
   const m = msg.message
   if (!m) return { text: null, mediaType: null }
 
-  // Plain text
   if (m.conversation) return { text: m.conversation, mediaType: null }
-
-  // Extended text (replies, links, etc.)
   if (m.extendedTextMessage?.text) {
     return { text: m.extendedTextMessage.text, mediaType: null }
   }
-
-  // Media types
   if (m.imageMessage) {
     return { text: m.imageMessage.caption ?? null, mediaType: 'image' }
   }
@@ -78,32 +88,19 @@ function extractMessageContent(msg: WAMessage): {
 }
 
 /**
- * Determine if a message is historical (imported during sync) vs live.
- * Historical messages have timestamps significantly in the past.
- */
-/** Messages older than this are considered historical (imported, not live) */
-const HISTORICAL_THRESHOLD_SECONDS = 8 * 60 * 60 // 8 hours
-
-function isHistorical(msg: WAMessage): boolean {
-  const ts = msg.messageTimestamp
-  if (!ts) return false
-  const seconds = typeof ts === 'number' ? ts : Number(ts)
-  const ageSeconds = Math.floor(Date.now() / 1000) - seconds
-  return ageSeconds > HISTORICAL_THRESHOLD_SECONDS
-}
-
-/**
  * Process a WhatsApp message (live or historical):
  * 1. Dedup by wamid
  * 2. Find or create client (reopen if soft-deleted)
  * 3. Find or create conversation
  * 4. Save message (with original WhatsApp timestamp)
- * 5. Enqueue to pgmq for async processing (live inbound only)
+ * 5. Enqueue to pgmq (live inbound only)
  */
 export async function handleInboundMessage(
   workspaceId: string,
-  msg: WAMessage
+  msg: WAMessage,
+  context: MessageContext
 ): Promise<void> {
+  const { source } = context
   const wamid = msg.key.id
   const remoteJid = msg.key.remoteJid
   const isFromMe = msg.key.fromMe ?? false
@@ -127,7 +124,6 @@ export async function handleInboundMessage(
   const direction = isFromMe ? 'outbound' : 'inbound'
   const senderType = isFromMe ? 'staff' : 'client'
   const msgTimestamp = extractTimestamp(msg)
-  const historical = isHistorical(msg)
   const { text, mediaType } = extractMessageContent(msg)
 
   // Skip if no content at all (e.g. protocol messages, reactions)
@@ -136,8 +132,14 @@ export async function handleInboundMessage(
     return
   }
 
+  // Business rules based on source + direction
+  const isLiveInbound = source === 'live' && direction === 'inbound'
+  const shouldMarkUnread = isLiveInbound
+  const shouldEnqueue = isLiveInbound
+  const shouldReactivateClient = source === 'live'
+
   try {
-    // Step 1: Dedup by wamid — INSERT into message_inbox ON CONFLICT DO NOTHING
+    // Step 1: Dedup by wamid
     const { error: dedupError } = await supabase
       .from('message_inbox')
       .insert({ wamid, workspace_id: workspaceId })
@@ -151,8 +153,6 @@ export async function handleInboundMessage(
     }
 
     // Step 2: Find or create client by (workspace_id, phone)
-    // Use ignoreDuplicates: true to avoid overwriting existing fields.
-    // Then fetch separately to handle soft-deleted clients.
     const { error: upsertError } = await supabase
       .from('clients')
       .upsert(
@@ -162,7 +162,7 @@ export async function handleInboundMessage(
 
     if (upsertError && upsertError.code !== PG_UNIQUE_VIOLATION) throw upsertError
 
-    // Fetch the client (may be soft-deleted)
+    // Fetch client (may be soft-deleted)
     const { data: client, error: fetchErr } = await supabase
       .from('clients')
       .select('id, lifecycle_status, deleted_at')
@@ -172,7 +172,7 @@ export async function handleInboundMessage(
 
     if (fetchErr) throw fetchErr
 
-    // Reopen soft-deleted client
+    // Reopen soft-deleted client (always, regardless of source)
     if (client.deleted_at) {
       await supabase
         .from('clients')
@@ -183,22 +183,16 @@ export async function handleInboundMessage(
         })
         .eq('id', client.id as string)
       logger.info({ workspaceId, clientId: client.id, phone }, 'Reopened soft-deleted client')
-    } else if (client.lifecycle_status === 'inactive' && !historical) {
-      // Reactivate inactive client on live messages only
-      await supabase
-        .from('clients')
-        .update({ lifecycle_status: 'open', last_contacted_at: msgTimestamp })
-        .eq('id', client.id as string)
-    } else if (!historical) {
-      // Update last_contacted_at for live messages only
-      await supabase
-        .from('clients')
-        .update({ last_contacted_at: msgTimestamp })
-        .eq('id', client.id as string)
+    } else if (shouldReactivateClient) {
+      // Live messages: reactivate inactive clients + update last_contacted_at
+      const update = client.lifecycle_status === 'inactive'
+        ? { lifecycle_status: 'open', last_contacted_at: msgTimestamp }
+        : { last_contacted_at: msgTimestamp }
+      await supabase.from('clients').update(update).eq('id', client.id as string)
     }
+    // History messages: don't touch lifecycle or last_contacted_at
 
-    // Step 3: Find or create conversation by client_id (unique)
-    // Use ignoreDuplicates to avoid overwriting existing conversation state
+    // Step 3: Find or create conversation
     const { error: convUpsertErr } = await supabase
       .from('conversations')
       .upsert(
@@ -214,7 +208,6 @@ export async function handleInboundMessage(
 
     if (convUpsertErr && convUpsertErr.code !== PG_UNIQUE_VIOLATION) throw convUpsertErr
 
-    // Fetch conversation
     const { data: conversation, error: convFetchErr } = await supabase
       .from('conversations')
       .select('id, last_message_at')
@@ -237,7 +230,6 @@ export async function handleInboundMessage(
     }
 
     // Step 4: Save message with original WhatsApp timestamp
-    // Historical inbound messages are marked as read to avoid flooding the unread badge
     const { data: savedMsg, error: msgError } = await supabase
       .from('messages')
       .insert({
@@ -249,7 +241,7 @@ export async function handleInboundMessage(
         sender_type: senderType,
         delivery_status: 'delivered',
         wamid,
-        is_read: isFromMe || historical, // outbound + historical = already read
+        is_read: !shouldMarkUnread,
         created_at: msgTimestamp,
       })
       .select('id')
@@ -257,9 +249,8 @@ export async function handleInboundMessage(
 
     if (msgError) throw msgError
 
-    // Step 5: Enqueue to pgmq for async processing (live inbound only)
-    // Historical messages and outbound messages don't need LLM processing
-    if (direction === 'inbound' && !historical) {
+    // Step 5: Enqueue to pgmq (live inbound only)
+    if (shouldEnqueue) {
       const { error: queueError } = await supabase.rpc('pgmq_send', {
         queue_name: 'inbound_messages',
         msg: {
@@ -283,7 +274,7 @@ export async function handleInboundMessage(
     }
 
     logger.info(
-      { workspaceId, wamid, direction, historical, clientId: client.id, msgId: savedMsg.id },
+      { workspaceId, wamid, direction, source, clientId: client.id, msgId: savedMsg.id },
       'Message processed'
     )
   } catch (err) {

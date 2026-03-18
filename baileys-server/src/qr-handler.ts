@@ -34,8 +34,8 @@ qrRouter.get('/qr/:workspaceId', async (req: Request, res: Response): Promise<vo
 
   // Start connection (will generate QR if no stored creds)
   try {
-    await connectWorkspace(workspaceId, (msg) => {
-      void handleInboundMessage(workspaceId, msg)
+    await connectWorkspace(workspaceId, (msg, source) => {
+      void handleInboundMessage(workspaceId, msg, { source })
     })
   } catch (err) {
     logger.error({ workspaceId, err }, 'Failed to start connection')

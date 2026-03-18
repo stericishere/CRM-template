@@ -48,8 +48,8 @@ app.post('/reconnect/:workspaceId', async (req: Request, res: Response): Promise
   }
 
   try {
-    await connectWorkspace(workspaceId, (msg) => {
-      void handleInboundMessage(workspaceId, msg)
+    await connectWorkspace(workspaceId, (msg, source) => {
+      void handleInboundMessage(workspaceId, msg, { source })
     })
     res.json({ success: true })
   } catch (err) {

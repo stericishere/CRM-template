@@ -9,6 +9,7 @@ import { Boom } from '@hapi/boom'
 import { useSupabaseAuthState } from './auth-store.js'
 import { supabase } from './supabase.js'
 import { logger } from './logger.js'
+import type { MessageSource } from './message-handler.js'
 
 /**
  * Per-workspace Baileys socket lifecycle manager.
@@ -32,7 +33,7 @@ interface WorkspaceSocket {
   status: ConnectionStatus
   qrCode: string | null
   reconnectAttempts: number
-  onMessage: (msg: WAMessage) => void
+  onMessage: (msg: WAMessage, source: MessageSource) => void
   onQr?: (qr: string) => void
   /** Timer handle for reconnect — used for cleanup on manual disconnect */
   reconnectTimer?: ReturnType<typeof setTimeout>
@@ -56,7 +57,7 @@ export function getSocket(workspaceId: string): WASocket | null {
 
 export async function connectWorkspace(
   workspaceId: string,
-  onMessage: (msg: WAMessage) => void
+  onMessage: (msg: WAMessage, source: MessageSource) => void
 ): Promise<void> {
   const existing = sockets.get(workspaceId)
   if (existing?.status === 'connected') {
@@ -152,7 +153,7 @@ export async function connectWorkspace(
       if (type !== 'notify') return
       for (const msg of msgs) {
         if (!msg.key.fromMe && msg.message) {
-          ws.onMessage(msg as WAMessage)
+          ws.onMessage(msg as WAMessage, 'live')
         }
       }
     })
@@ -242,7 +243,7 @@ export async function connectWorkspace(
           continue
         }
 
-        ws.onMessage(msg as WAMessage)
+        ws.onMessage(msg as WAMessage, 'history')
         processed++
       }
       logger.info(

@@ -275,6 +275,69 @@ describe('Socket reconnect strategy', () => {
   })
 })
 
+// ─── Message Source Context ─────────────────────────────────────────
+describe('Message source determines behavior (not timestamp)', () => {
+  type MessageSource = 'live' | 'history'
+
+  function computeBehavior(source: MessageSource, direction: 'inbound' | 'outbound') {
+    const isLiveInbound = source === 'live' && direction === 'inbound'
+    return {
+      shouldMarkUnread: isLiveInbound,
+      shouldEnqueue: isLiveInbound,
+      shouldReactivateClient: source === 'live',
+    }
+  }
+
+  it('live inbound → unread + enqueued + reactivates client', () => {
+    const b = computeBehavior('live', 'inbound')
+    expect(b.shouldMarkUnread).toBe(true)
+    expect(b.shouldEnqueue).toBe(true)
+    expect(b.shouldReactivateClient).toBe(true)
+  })
+
+  it('live outbound → read + not enqueued + reactivates client', () => {
+    const b = computeBehavior('live', 'outbound')
+    expect(b.shouldMarkUnread).toBe(false)
+    expect(b.shouldEnqueue).toBe(false)
+    expect(b.shouldReactivateClient).toBe(true)
+  })
+
+  it('history inbound → read + not enqueued + no reactivation', () => {
+    const b = computeBehavior('history', 'inbound')
+    expect(b.shouldMarkUnread).toBe(false)
+    expect(b.shouldEnqueue).toBe(false)
+    expect(b.shouldReactivateClient).toBe(false)
+  })
+
+  it('history outbound → read + not enqueued + no reactivation', () => {
+    const b = computeBehavior('history', 'outbound')
+    expect(b.shouldMarkUnread).toBe(false)
+    expect(b.shouldEnqueue).toBe(false)
+    expect(b.shouldReactivateClient).toBe(false)
+  })
+
+  it('old message from messages.upsert (live) is still unread and queued', () => {
+    // A message delivered after an 8h outage arrives via messages.upsert
+    // Source is 'live' — timestamp doesn't matter for behavior
+    const b = computeBehavior('live', 'inbound')
+    expect(b.shouldMarkUnread).toBe(true)
+    expect(b.shouldEnqueue).toBe(true)
+  })
+
+  it('recent message from messaging-history.set is marked read and not queued', () => {
+    // A message from 5 minutes ago arrives via history sync
+    // Source is 'history' — even though it's recent, it's imported
+    const b = computeBehavior('history', 'inbound')
+    expect(b.shouldMarkUnread).toBe(false)
+    expect(b.shouldEnqueue).toBe(false)
+  })
+
+  it('outbound messages are never enqueued regardless of source', () => {
+    expect(computeBehavior('live', 'outbound').shouldEnqueue).toBe(false)
+    expect(computeBehavior('history', 'outbound').shouldEnqueue).toBe(false)
+  })
+})
+
 // ─── Lifecycle Status Enum ──────────────────────────────────────────
 describe('Lifecycle status transitions', () => {
   const VALID_STATUSES = [
