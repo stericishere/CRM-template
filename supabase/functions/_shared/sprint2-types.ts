@@ -9,6 +9,13 @@ export interface GlobalContext {
   verticalConfig: VerticalConfig
   communicationRules: CommunicationRule[]
   calendarConnected: boolean
+  scheduledReminder: ScheduledReminderConfig
+}
+
+/** Reminder config — when a booking is created, a reminder is sent the day before */
+export interface ScheduledReminderConfig {
+  enabled: boolean
+  daysBefore: number  // default: 1
 }
 
 /** Per-client, per-message context — fresh on every invocation */

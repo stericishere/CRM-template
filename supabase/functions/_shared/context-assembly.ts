@@ -67,6 +67,10 @@ export async function assembleContext(
     verticalConfig: parseVerticalConfig(workspace.vertical_config),
     communicationRules: parseCommunicationRules(workspace.communication_profile),
     calendarConnected: !!workspace.calendar_config,
+    scheduledReminder: {
+      enabled: workspace.scheduled_reminder_enabled ?? true,
+      daysBefore: workspace.scheduled_reminder_days_before ?? 1,
+    },
 
     // MessageContext (per-client, per-message)
     sessionKey: `workspace:${workspaceId}:client:${clientId}`,
