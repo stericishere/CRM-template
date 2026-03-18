@@ -171,10 +171,10 @@ export async function connectWorkspace(
         if (!phone) continue
 
         // Upsert client with contact name.
-        // First try insert, then update name if client already exists.
+        // Format: "Name-+phone" when name known, NULL when unknown.
         const e164 = `+${phone}`
         const rawName = contact.name ?? contact.notify ?? null
-        const contactName = rawName ? `${e164}-${rawName}` : e164
+        const contactName = rawName ? `${rawName}-${e164}` : null
         void (async () => {
           const { error: insertErr } = await supabase
             .from('clients')
@@ -185,12 +185,14 @@ export async function connectWorkspace(
           if (insertErr && insertErr.code !== '23505') {
             logger.error({ workspaceId, phone: e164, error: insertErr }, 'Failed to insert contact')
           }
-          // Update name on existing client (ignoreDuplicates skips the row, so update separately)
-          await supabase
-            .from('clients')
-            .update({ full_name: contactName })
-            .eq('workspace_id', workspaceId)
-            .eq('phone', e164)
+          // Update name on existing client only if we have a name
+          if (contactName) {
+            await supabase
+              .from('clients')
+              .update({ full_name: contactName })
+              .eq('workspace_id', workspaceId)
+              .eq('phone', e164)
+          }
         })()
       }
     })
