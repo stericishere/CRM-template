@@ -4,10 +4,9 @@
 
 import type { ProposedAction, ApprovalTier, ProposedActionType } from './sprint2-types.ts'
 
-// Fixed MVP policy — all draft replies require review
+// Fixed MVP policy — only appointments are auto, everything else requires human review
 const AUTO_ACTIONS: Set<ProposedActionType> = new Set([
-  'note_create',
-  'last_contacted_update',
+  'booking_create',
 ])
 
 const HUMAN_ONLY_ACTIONS: Set<ProposedActionType> = new Set([
