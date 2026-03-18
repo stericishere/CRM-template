@@ -213,7 +213,7 @@ export async function connectWorkspace(
 
     // Messages → the main payload. Both inbound and outbound.
     // HISTORY_SYNC_CUTOFF_DAYS controls how far back to sync (default: 90 days, 0 = no limit)
-    const cutoffDays = parseInt(process.env['HISTORY_SYNC_CUTOFF_DAYS'] ?? '90', 10)
+    const cutoffDays = parseInt(process.env['HISTORY_SYNC_CUTOFF_DAYS'] ?? '45', 10)
     const cutoffTs = cutoffDays > 0 ? Math.floor(Date.now() / 1000) - (cutoffDays * 86400) : 0
 
     sock.ev.on('messaging-history.set', ({ messages: historyMsgs, isLatest }) => {
