@@ -1,19 +1,73 @@
 // supabase/functions/process-message/index.ts
 // Sprint 1: Dequeue + advisory lock + audit event
-// Sprint 2: Context assembly + LLM + draft generation
+// Sprint 2: DLQ check + context assembly + LLM + approval policy + draft generation
+//
+// Full pipeline flow:
+//
+//  ┌──────────────┐
+//  │ pgmq_read    │  Dequeue one message (VT=120s for LLM processing)
+//  └──────┬───────┘
+//         │
+//         v
+//  ┌──────────────┐
+//  │ DLQ check    │  read_ct > 3 → move to inbound_dlq, skip processing
+//  └──────┬───────┘
+//         │
+//         v
+//  ┌──────────────┐
+//  │ Advisory lock│  Per-client lock — skip if another worker holds it
+//  └──────┬───────┘
+//         │
+//         v
+//  ┌──────────────┐
+//  │ Audit event  │  Fire-and-log (non-blocking)
+//  └──────┬───────┘
+//         │
+//         v
+//  ┌──────────────┐
+//  │ Idempotency  │  Skip if pending draft already exists for conversation
+//  └──────┬───────┘
+//         │
+//         v
+//  ┌──────────────────────────────────────────────────────────┐
+//  │                    AI Pipeline                           │
+//  │  assembleContext → invokeClientWorker → approval policy  │
+//  │  → save auto actions → save review actions               │
+//  │  → saveDraft → logLLMUsage                               │
+//  └──────┬───────────────────────────────────────────────────┘
+//         │
+//         v
+//  ┌──────────────┐
+//  │ pgmq_delete  │  ACK message from queue
+//  └──────────────┘
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { getSupabaseClient } from '../_shared/db.ts'
 import type { InboundMessagePayload, AuditEvent } from '../_shared/types.ts'
+import type { InboundMessage } from '../_shared/sprint2-types.ts'
+import { assembleContext } from '../_shared/context-assembly.ts'
+import { invokeClientWorker } from '../_shared/agent-runtime.ts'
+import { createToolRegistry } from '../_shared/tool-registry.ts'
+import { evaluateApprovalPolicy } from '../_shared/approval-policy.ts'
+import { saveDraft, logLLMUsage } from '../_shared/draft-persistence.ts'
+import { estimateCost, PRO_MODEL } from '../_shared/llm-client.ts'
+
+// VT raised to 120s to give the LLM pipeline time to complete before
+// the message becomes visible again for retry.
+const QUEUE_VT_SECONDS = 120
+// Messages read more than this many times go to DLQ instead of retrying.
+const DLQ_READ_CT_THRESHOLD = 3
 
 serve(async (_req) => {
   const supabase = getSupabaseClient()
 
   try {
-    // Dequeue one message from pgmq
+    // -------------------------------------------------------------------------
+    // 1. Dequeue one message from pgmq
+    // -------------------------------------------------------------------------
     const { data: messages, error: dequeueError } = await supabase.rpc('pgmq_read', {
       queue_name: 'inbound_messages',
-      vt: 60, // visibility timeout: 60 seconds
+      vt: QUEUE_VT_SECONDS,
       qty: 1,
     })
 
@@ -33,10 +87,46 @@ serve(async (_req) => {
       messageId: payload.message_id,
       workspaceId: payload.workspace_id,
       clientId: payload.client_id,
+      readCt: queueMsg.read_ct,
     })
 
-    // Acquire advisory lock on client_id for per-client ordering
-    // This ensures only one worker processes messages for a given client at a time
+    // -------------------------------------------------------------------------
+    // 2. DLQ check: if read_ct > threshold, move to inbound_dlq and stop
+    // -------------------------------------------------------------------------
+    if (queueMsg.read_ct > DLQ_READ_CT_THRESHOLD) {
+      console.warn('Message exceeded retry limit, routing to DLQ:', {
+        messageId: payload.message_id,
+        readCt: queueMsg.read_ct,
+      })
+
+      try {
+        await supabase.from('inbound_dlq').insert({
+          original_msg_id: queueMsg.msg_id,
+          queue_name: 'inbound_messages',
+          payload: queueMsg.message,
+          read_ct: queueMsg.read_ct,
+          failed_at: new Date().toISOString(),
+        })
+      } catch (dlqErr) {
+        // Log DLQ write failure but still delete from main queue to prevent
+        // infinite retry loops — operator must inspect logs for recovery.
+        console.error('DLQ write failed (message will be deleted anyway):', dlqErr)
+      }
+
+      await supabase.rpc('pgmq_delete', {
+        queue_name: 'inbound_messages',
+        msg_id: queueMsg.msg_id,
+      })
+
+      return new Response(
+        JSON.stringify({ processed: 0, dlq: true, messageId: payload.message_id }),
+        { status: 200 }
+      )
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. Acquire advisory lock on client_id for per-client ordering
+    //    Only one worker processes messages for a given client at a time.
     //
     // ┌─────────────┐    ┌──────────────┐    ┌─────────────┐
     // │  pgmq_read   │───>│ advisory lock │───>│ process msg │
@@ -55,13 +145,15 @@ serve(async (_req) => {
     })
 
     if (!lockAcquired) {
-      // Another worker is processing this client's messages
-      // Don't delete from queue — it will become visible again after VT expires
+      // Another worker is processing this client's messages.
+      // Don't delete from queue — it will become visible again after VT expires.
       console.log('Advisory lock not acquired, skipping:', payload.client_id)
       return new Response(JSON.stringify({ processed: 0, locked: true }), { status: 200 })
     }
 
-    // Write audit event (fire-and-log pattern)
+    // -------------------------------------------------------------------------
+    // 4. Write audit event (fire-and-log pattern, non-blocking)
+    // -------------------------------------------------------------------------
     const auditEvent: AuditEvent = {
       workspace_id: payload.workspace_id,
       actor_type: 'system',
@@ -85,16 +177,173 @@ serve(async (_req) => {
       console.error('Audit write failed (non-blocking):', auditErr)
     }
 
-    // === Sprint 2: Context Assembly + LLM + Draft Generation ===
-    // TODO: Implement in Sprint 2:
-    // 1. Assemble context (client profile, recent messages, knowledge search)
-    // 2. Call LLM (Claude Sonnet) with tool calling
-    // 3. Execute tool results
-    // 4. Save draft to drafts table (triggers Realtime: "draft ready")
-    // 5. Save proposed_actions if any
-    // 6. Log LLM usage to llm_usage table
+    // -------------------------------------------------------------------------
+    // 5. Idempotency check: skip if a pending draft already exists for this
+    //    conversation (staff_action IS NULL means not yet acted on).
+    //    Prevents duplicate LLM calls on message re-delivery.
+    // -------------------------------------------------------------------------
+    const { data: existingDraft, error: idempotencyError } = await supabase
+      .from('drafts')
+      .select('id')
+      .eq('conversation_id', payload.conversation_id)
+      .is('staff_action', null)
+      .limit(1)
+      .maybeSingle()
 
-    // Delete message from queue (successfully processed)
+    if (idempotencyError) {
+      console.error('Idempotency check failed (non-blocking, continuing):', idempotencyError.message)
+    } else if (existingDraft) {
+      console.log('Pending draft already exists, skipping AI pipeline:', {
+        conversationId: payload.conversation_id,
+        existingDraftId: existingDraft.id,
+      })
+
+      // ACK the message — it was already processed on a prior delivery
+      await supabase.rpc('pgmq_delete', {
+        queue_name: 'inbound_messages',
+        msg_id: queueMsg.msg_id,
+      })
+
+      return new Response(
+        JSON.stringify({ processed: 0, idempotent: true, messageId: payload.message_id }),
+        { status: 200 }
+      )
+    }
+
+    // -------------------------------------------------------------------------
+    // 6–12. AI Pipeline — wrapped in try/catch so VT expiry handles retries
+    // -------------------------------------------------------------------------
+    try {
+      const pipelineStart = Date.now()
+
+      // 6. Context assembly — all DB reads run in parallel
+      const inboundMessage: InboundMessage = {
+        content: payload.content,
+        mediaType: payload.media_type,
+        mediaTranscription: null, // populated by media-transcription function (future)
+        timestamp: new Date().toISOString(),
+      }
+
+      console.log('[pipeline] Assembling context', {
+        workspaceId: payload.workspace_id,
+        clientId: payload.client_id,
+      })
+
+      const context = await assembleContext(
+        supabase,
+        payload.workspace_id,
+        payload.client_id,
+        inboundMessage
+      )
+
+      // 7. Agent runtime — LLM tool-calling loop
+      const toolRegistry = createToolRegistry(supabase)
+
+      console.log('[pipeline] Invoking client worker', {
+        model: PRO_MODEL,
+        conversationId: payload.conversation_id,
+      })
+
+      const workerResult = await invokeClientWorker(context, toolRegistry, {
+        model: PRO_MODEL,
+        calendarConnected: false, // Sprint 3: detect from workspace settings
+        maxTokens: 1024,
+      })
+
+      const latencyMs = Date.now() - pipelineStart
+
+      console.log('[pipeline] Worker completed', {
+        intent: workerResult.intent,
+        confidence: workerResult.confidence,
+        scenarioType: workerResult.scenarioType,
+        proposedActionsCount: workerResult.proposedActions.length,
+        tokensIn: workerResult.usage.tokensIn,
+        tokensOut: workerResult.usage.tokensOut,
+        latencyMs,
+      })
+
+      // 8. Approval policy — classify proposed actions by tier
+      const { auto: autoActions, review: reviewActions, humanOnly: humanOnlyActions } =
+        evaluateApprovalPolicy(workerResult.proposedActions)
+
+      // 9. Save draft to drafts table (INSERT triggers Supabase Realtime)
+      const { draftId } = await saveDraft(supabase, {
+        conversationId: payload.conversation_id,
+        workspaceId: payload.workspace_id,
+        content: workerResult.draft,
+        intentClassified: workerResult.intent,
+        confidenceScore: workerResult.confidence,
+        knowledgeSources: workerResult.knowledgeSources,
+        scenarioType: workerResult.scenarioType,
+      })
+
+      console.log('[pipeline] Draft saved', { draftId })
+
+      // 10. Save review + human_only actions to proposed_actions table.
+      //     Auto-tier actions were already executed by the tool-registry
+      //     (e.g. create_note inserts directly).
+      const pendingActions = [...reviewActions, ...humanOnlyActions]
+      if (pendingActions.length > 0) {
+        const rows = pendingActions.map(action => ({
+          workspace_id: action.workspaceId,
+          client_id: action.clientId,
+          conversation_id: action.conversationId,
+          draft_id: draftId,
+          action_type: action.actionType,
+          summary: action.summary,
+          tier: action.tier,
+          payload: action.payload,
+          status: 'pending',
+        }))
+
+        const { error: actionsError } = await supabase
+          .from('proposed_actions')
+          .insert(rows)
+
+        if (actionsError) {
+          // Non-fatal: draft is saved and visible to staff; actions can be
+          // re-proposed on the next run. Log for operator visibility.
+          console.error('[pipeline] Failed to insert proposed_actions:', actionsError.message)
+        } else {
+          console.log('[pipeline] Proposed actions saved', {
+            review: reviewActions.length,
+            humanOnly: humanOnlyActions.length,
+            auto: autoActions.length,
+          })
+        }
+      }
+
+      // 11. Log LLM usage (best-effort, failures are logged inside logLLMUsage)
+      const costUsd = estimateCost(
+        PRO_MODEL,
+        workerResult.usage.tokensIn,
+        workerResult.usage.tokensOut
+      )
+
+      await logLLMUsage(supabase, {
+        workspaceId: payload.workspace_id,
+        clientId: payload.client_id,
+        edgeFunctionName: 'process-message',
+        model: PRO_MODEL,
+        tokensIn: workerResult.usage.tokensIn,
+        tokensOut: workerResult.usage.tokensOut,
+        latencyMs,
+        costUsd,
+      })
+
+    } catch (pipelineErr) {
+      // AI pipeline failure: do NOT delete from queue so VT expiry causes retry.
+      // The DLQ check above ensures we don't retry indefinitely.
+      console.error('[pipeline] AI pipeline failed — message will retry after VT:', pipelineErr)
+      return new Response(
+        JSON.stringify({ error: String(pipelineErr), retrying: true }),
+        { status: 500 }
+      )
+    }
+
+    // -------------------------------------------------------------------------
+    // 13. Delete message from queue (successfully processed)
+    // -------------------------------------------------------------------------
     await supabase.rpc('pgmq_delete', {
       queue_name: 'inbound_messages',
       msg_id: queueMsg.msg_id,
