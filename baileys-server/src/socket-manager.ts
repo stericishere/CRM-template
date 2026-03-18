@@ -40,7 +40,10 @@ interface WorkspaceSocket {
 const sockets = new Map<string, WorkspaceSocket>()
 
 const MAX_RECONNECT_DELAY_MS = 60_000
-const MAX_RECONNECT_ATTEMPTS = 15
+/** After this many fast retries, switch to slow polling interval */
+const FAST_RETRY_LIMIT = 15
+/** Slow polling interval after fast retries exhausted (5 minutes) */
+const SLOW_RETRY_INTERVAL_MS = 5 * 60_000
 
 export function getSocketStatus(workspaceId: string): {
   status: ConnectionStatus
@@ -114,29 +117,14 @@ export async function connectWorkspace(
             ? lastDisconnect.error.output.statusCode
             : undefined
 
-        // Only reconnect if not logged out AND we have a known Boom status code
         const isLoggedOut = statusCode === DisconnectReason.loggedOut
         const isUnknownError = statusCode === undefined
-        const shouldReconnect = !isLoggedOut && ws.reconnectAttempts < MAX_RECONNECT_ATTEMPTS
 
         if (isUnknownError) {
           logger.warn({ workspaceId }, 'Unknown disconnect error (not Boom), will attempt reconnect')
         }
 
-        if (shouldReconnect) {
-          ws.reconnectAttempts++
-          const delay = Math.min(
-            1000 * Math.pow(2, ws.reconnectAttempts),
-            MAX_RECONNECT_DELAY_MS
-          )
-          logger.info(
-            { workspaceId, delay, attempt: ws.reconnectAttempts, maxAttempts: MAX_RECONNECT_ATTEMPTS },
-            'Reconnecting...'
-          )
-          ws.reconnectTimer = setTimeout(() => {
-            void startSocket()
-          }, delay)
-        } else if (isLoggedOut) {
+        if (isLoggedOut) {
           logger.warn({ workspaceId }, 'Logged out — clearing auth state')
           void supabase
             .from('baileys_auth')
@@ -149,12 +137,27 @@ export async function connectWorkspace(
             })
           sockets.delete(workspaceId)
         } else {
-          // Max reconnect attempts exceeded
-          logger.error(
-            { workspaceId, attempts: ws.reconnectAttempts },
-            'Max reconnect attempts reached — giving up'
+          // Two-phase reconnect: fast exponential backoff, then slow polling
+          ws.reconnectAttempts++
+          const inSlowPhase = ws.reconnectAttempts > FAST_RETRY_LIMIT
+          const delay = inSlowPhase
+            ? SLOW_RETRY_INTERVAL_MS
+            : Math.min(1000 * Math.pow(2, ws.reconnectAttempts), MAX_RECONNECT_DELAY_MS)
+
+          if (inSlowPhase && ws.reconnectAttempts === FAST_RETRY_LIMIT + 1) {
+            logger.warn(
+              { workspaceId, attempts: ws.reconnectAttempts },
+              'Fast retries exhausted, switching to slow polling (every 5min)'
+            )
+          }
+
+          logger.info(
+            { workspaceId, delay, attempt: ws.reconnectAttempts, phase: inSlowPhase ? 'slow' : 'fast' },
+            'Reconnecting...'
           )
-          ws.status = 'disconnected'
+          ws.reconnectTimer = setTimeout(() => {
+            void startSocket()
+          }, delay)
         }
       }
     })

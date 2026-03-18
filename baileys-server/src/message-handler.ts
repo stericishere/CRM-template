@@ -120,16 +120,27 @@ export async function handleInboundMessage(
     if (upsertedClient) {
       client = { id: upsertedClient.id as string, lifecycle_status: upsertedClient.lifecycle_status as string }
     } else {
-      // Client already exists — fetch it
+      // Client already exists (upsert was skipped due to UNIQUE constraint).
+      // Fetch WITHOUT deleted_at filter — the row may be soft-deleted.
       const { data: existing, error: fetchErr } = await supabase
         .from('clients')
-        .select('id, lifecycle_status')
+        .select('id, lifecycle_status, deleted_at')
         .eq('workspace_id', workspaceId)
         .eq('phone', phone)
-        .is('deleted_at', null)
         .single()
       if (fetchErr) throw fetchErr
-      client = { id: existing.id as string, lifecycle_status: existing.lifecycle_status as string }
+
+      // Reopen soft-deleted client: a re-engaging archived client should be restored
+      if (existing.deleted_at) {
+        await supabase
+          .from('clients')
+          .update({ deleted_at: null, lifecycle_status: 'open', updated_at: new Date().toISOString() })
+          .eq('id', existing.id as string)
+        client = { id: existing.id as string, lifecycle_status: 'open' }
+        logger.info({ workspaceId, clientId: existing.id, phone }, 'Reopened soft-deleted client')
+      } else {
+        client = { id: existing.id as string, lifecycle_status: existing.lifecycle_status as string }
+      }
     }
 
     // Step 3: Update client + find/create conversation in parallel
