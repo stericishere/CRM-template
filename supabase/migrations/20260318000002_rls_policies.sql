@@ -25,6 +25,7 @@ ALTER TABLE audit_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE draft_edit_signals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE message_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE llm_usage ENABLE ROW LEVEL SECURITY;
+ALTER TABLE message_inbox ENABLE ROW LEVEL SECURITY;
 
 -- ============================================================
 -- RLS policies
@@ -105,6 +106,10 @@ CREATE POLICY "workspace_isolation" ON message_templates
 
 -- LLM USAGE (read-only for staff)
 CREATE POLICY "staff_read_own_workspace" ON llm_usage
+  FOR SELECT USING (workspace_id = auth.workspace_id());
+
+-- MESSAGE INBOX (service role writes for dedup, no staff access needed)
+CREATE POLICY "workspace_isolation" ON message_inbox
   FOR SELECT USING (workspace_id = auth.workspace_id());
 
 -- BAILEYS AUTH (no RLS — service role only, no staff access)
