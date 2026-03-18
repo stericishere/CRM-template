@@ -81,13 +81,15 @@ function extractMessageContent(msg: WAMessage): {
  * Determine if a message is historical (imported during sync) vs live.
  * Historical messages have timestamps significantly in the past.
  */
+/** Messages older than this are considered historical (imported, not live) */
+const HISTORICAL_THRESHOLD_SECONDS = 8 * 60 * 60 // 8 hours
+
 function isHistorical(msg: WAMessage): boolean {
   const ts = msg.messageTimestamp
   if (!ts) return false
   const seconds = typeof ts === 'number' ? ts : Number(ts)
-  // If message is older than 60 seconds, it's historical
   const ageSeconds = Math.floor(Date.now() / 1000) - seconds
-  return ageSeconds > 60
+  return ageSeconds > HISTORICAL_THRESHOLD_SECONDS
 }
 
 /**
