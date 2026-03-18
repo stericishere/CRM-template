@@ -2,20 +2,73 @@
 // Covers F-05 (Context Assembly & Agent Runtime), F-06 (Approval & Governance), F-10 (Learning Signals)
 
 // === Context Assembly (F-05) ===
+// Structured like OpenClaw: BUSINESS.md, AGENT, TOOLS, MEMORY, HEARTBEAT
 
 /** Workspace-level context — cacheable, does not change per message */
 export interface GlobalContext {
-  workspace: WorkspaceContext
-  verticalConfig: VerticalConfig
-  communicationRules: CommunicationRule[]
+  /** BUSINESS.md — who this business is */
+  identity: BusinessIdentity
+  /** AGENT — behavior rules, SOPs, what the agent can/cannot do */
+  agent: AgentConfig
+  /** TOOLS — available tools and their config */
+  tools: ToolsConfig
+  /** Business context — hours, calendar, scheduling, reminders */
+  businessContext: BusinessContext
+  /** MEMORY — learned patterns from past interactions */
+  memory: AgentMemory
+  /** HEARTBEAT — current operational status */
+  heartbeat: AgentHeartbeat
+}
+
+// --- BUSINESS.md (was WorkspaceContext) ---
+
+export interface BusinessIdentity {
+  businessName: string
+  vertical: string
+  description: string | null
+  toneProfile: string | null
+}
+
+// --- AGENT ---
+
+export interface AgentConfig {
+  sopRules: string[]
+  intentTaxonomy: readonly string[]
+  customFields: Array<{ name: string; description: string }>
+  appointmentTypes: Array<{ name: string; description: string }>
+}
+
+// --- TOOLS ---
+
+export interface ToolsConfig {
   calendarConnected: boolean
+  knowledgeBaseEnabled: boolean
+}
+
+// --- Business Context ---
+
+export interface BusinessContext {
+  timezone: string
+  businessHours: Record<string, { open: string; close: string }> | null
   scheduledReminder: ScheduledReminderConfig
 }
 
-/** Reminder config — when a booking is created, a reminder is sent the day before */
 export interface ScheduledReminderConfig {
   enabled: boolean
   daysBefore: number  // default: 1
+}
+
+// --- MEMORY ---
+
+export interface AgentMemory {
+  communicationRules: CommunicationRule[]
+}
+
+// --- HEARTBEAT ---
+
+export interface AgentHeartbeat {
+  workspaceId: string
+  status: string  // 'active', 'paused', etc.
 }
 
 /** Per-client, per-message context — fresh on every invocation */
@@ -34,19 +87,6 @@ export interface MessageContext {
 
 /** Combined context passed to the agent runtime */
 export interface ReadOnlyContext extends GlobalContext, MessageContext {}
-
-export interface WorkspaceContext {
-  businessName: string
-  timezone: string
-  businessHours: Record<string, { open: string; close: string }> | null
-  toneProfile: string | null
-}
-
-export interface VerticalConfig {
-  customFields: Array<{ name: string; description: string }>
-  appointmentTypes: Array<{ name: string; description: string }>
-  sopRules: string[]
-}
 
 export interface CommunicationRule {
   rule: string

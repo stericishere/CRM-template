@@ -15,7 +15,6 @@
 
 import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import type {
-  GlobalContext,
   ReadOnlyContext,
   RecentMessage,
   BookingContext,
@@ -23,6 +22,7 @@ import type {
   NoteContext,
   InboundMessage,
 } from './sprint2-types.ts'
+import { buildGlobalContext } from '../../../global-context/index.ts'
 import { searchKnowledge } from './knowledge-search.ts'
 
 export async function assembleContext(
@@ -57,20 +57,8 @@ export async function assembleContext(
   ])
 
   return {
-    // GlobalContext (workspace-level, cacheable)
-    workspace: {
-      businessName: workspace.business_name,
-      timezone: workspace.timezone,
-      businessHours: workspace.business_hours,
-      toneProfile: workspace.tone_profile,
-    },
-    verticalConfig: parseVerticalConfig(workspace.vertical_config),
-    communicationRules: parseCommunicationRules(workspace.communication_profile),
-    calendarConnected: !!workspace.calendar_config,
-    scheduledReminder: {
-      enabled: workspace.scheduled_reminder_enabled ?? true,
-      daysBefore: workspace.scheduled_reminder_days_before ?? 1,
-    },
+    // GlobalContext — built by global-context/ router
+    ...buildGlobalContext(workspaceId, workspace),
 
     // MessageContext (per-client, per-message)
     sessionKey: `workspace:${workspaceId}:client:${clientId}`,
@@ -255,22 +243,3 @@ async function loadConversationState(
   return data?.state ?? 'idle'
 }
 
-// --- Parsers ---
-
-function parseVerticalConfig(config: unknown): VerticalConfig {
-  if (!config || typeof config !== 'object') {
-    return { customFields: [], appointmentTypes: [], sopRules: [] }
-  }
-  const c = config as Record<string, unknown>
-  return {
-    customFields: Array.isArray(c.customFields) ? c.customFields : [],
-    appointmentTypes: Array.isArray(c.appointmentTypes) ? c.appointmentTypes : [],
-    sopRules: Array.isArray(c.sopRules) ? c.sopRules : [],
-  }
-}
-
-function parseCommunicationRules(profile: unknown): CommunicationRule[] {
-  if (!profile || typeof profile !== 'object') return []
-  const p = profile as Record<string, unknown>
-  return Array.isArray(p.rules) ? p.rules : []
-}
