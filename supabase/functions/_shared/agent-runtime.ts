@@ -61,7 +61,7 @@ export async function invokeClientWorker(
   options: ClientWorkerOptions = {}
 ): Promise<ClientWorkerResult> {
   const model = options.model ?? PRO_MODEL
-  const calendarConnected = options.calendarConnected ?? false
+  const calendarConnected = context.calendarConnected
   const maxTokens = options.maxTokens ?? 1024
 
   // Parse session identifiers from the session key (format: workspace:{id}:client:{id})
@@ -74,13 +74,8 @@ export async function invokeClientWorker(
 
   const session = { workspaceId, clientId, conversationId }
 
-  // Build system prompt and tool definitions
-  const systemPrompt = composeSystemPrompt(
-    context.workspace,
-    context.verticalConfig,
-    context.communicationRules,
-    { calendarConnected }
-  )
+  // Build system prompt from GlobalContext (workspace-level, cacheable)
+  const systemPrompt = composeSystemPrompt(context)
 
   const tools = buildToolDefinitions(toolRegistry, { calendarConnected })
 

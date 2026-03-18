@@ -3,21 +3,30 @@
 
 // === Context Assembly (F-05) ===
 
-export interface ReadOnlyContext {
-  sessionKey: string
+/** Workspace-level context — cacheable, does not change per message */
+export interface GlobalContext {
   workspace: WorkspaceContext
   verticalConfig: VerticalConfig
   communicationRules: CommunicationRule[]
+  calendarConnected: boolean
+}
+
+/** Per-client, per-message context — fresh on every invocation */
+export interface MessageContext {
+  sessionKey: string
   knowledgeChunks: KnowledgeChunk[]
   client: ClientContext
   compactSummary: string | null
-  recentMessages: MessageContext[]
+  recentMessages: RecentMessage[]
   activeBookings: BookingContext[]
   openFollowUps: FollowUpContext[]
   recentNotes: NoteContext[]
   conversationState: string
   inboundMessage: InboundMessage
 }
+
+/** Combined context passed to the agent runtime */
+export interface ReadOnlyContext extends GlobalContext, MessageContext {}
 
 export interface WorkspaceContext {
   businessName: string
@@ -56,7 +65,7 @@ export interface ClientContext {
   lastContactedAt: string | null
 }
 
-export interface MessageContext {
+export interface RecentMessage {
   direction: 'inbound' | 'outbound'
   content: string | null
   timestamp: string

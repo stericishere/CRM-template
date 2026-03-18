@@ -1,7 +1,7 @@
 // supabase/functions/_shared/system-prompt.ts
 // Composes dynamic system prompt from workspace config at assembly time
 
-import type { WorkspaceContext, VerticalConfig, CommunicationRule } from './sprint2-types.ts'
+import type { GlobalContext } from './sprint2-types.ts'
 import { INTENT_TAXONOMY } from './sprint2-types.ts'
 
 const ROLE_PREAMBLE = `You are a customer service representative acting on behalf of the business below. You respond to client messages via WhatsApp. You are helpful, professional, and personalized.
@@ -19,12 +19,12 @@ CRITICAL RULES:
 - Personalize using client context.
 - All proposed actions go through staff approval. You cannot execute writes directly.`
 
-export function composeSystemPrompt(
-  workspace: WorkspaceContext,
-  verticalConfig: VerticalConfig,
-  communicationRules: CommunicationRule[],
-  options: { calendarConnected: boolean } = { calendarConnected: false }
-): string {
+/**
+ * Compose the system prompt from GlobalContext.
+ * This is workspace-level data — cacheable, does not change per message.
+ */
+export function composeSystemPrompt(global: GlobalContext): string {
+  const { workspace, verticalConfig, communicationRules, calendarConnected } = global
   const sections: string[] = [ROLE_PREAMBLE]
 
   // Business Identity
@@ -70,7 +70,7 @@ If multiple intents are present, classify the most actionable one as primary.
 Report your confidence as a float between 0.0 and 1.0.`)
 
   // Calendar note
-  if (!options.calendarConnected) {
+  if (!calendarConnected) {
     sections.push(`## Calendar Status
 Calendar is NOT connected. Do not offer to check availability or book appointments. If the client asks about scheduling, let them know you'll need to check manually and follow up.`)
   }

@@ -92,6 +92,8 @@ export type AuditActionType =
 
 // Re-export Sprint 2 types (F-05, F-06, F-10)
 export type {
+  GlobalContext,
+  MessageContext,
   ReadOnlyContext,
   ClientWorkerResult,
   ProposedAction,

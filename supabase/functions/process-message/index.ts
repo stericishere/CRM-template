@@ -246,7 +246,6 @@ serve(async (_req) => {
 
       const workerResult = await invokeClientWorker(context, toolRegistry, {
         model: PRO_MODEL,
-        calendarConnected: false, // Sprint 3: detect from workspace settings
         maxTokens: 1024,
       })
 

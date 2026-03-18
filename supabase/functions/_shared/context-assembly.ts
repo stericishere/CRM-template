@@ -1,26 +1,23 @@
 // supabase/functions/_shared/context-assembly.ts
-// Pure function: assembles all workspace + client data into ReadOnlyContext
+// Pure function: assembles GlobalContext + MessageContext into ReadOnlyContext
 // No side effects. The LLM cannot influence what data it receives.
 //
-// ┌────────────────┐   ┌────────────────┐   ┌────────────────┐
-// │ Workspace data │   │ Client data    │   │ Knowledge      │
-// │ (cacheable)    │   │ (fresh/invoke) │   │ search         │
-// └───────┬────────┘   └───────┬────────┘   └───────┬────────┘
-//         │                    │                     │
-//         v                    v                     v
-//     ┌──────────────────────────────────────────────────┐
-//     │             ReadOnlyContext                       │
-//     │  (~12K token budget, deterministic truncation)    │
-//     └──────────────────────────────────────────────────┘
+// ┌────────────────────┐   ┌────────────────┐   ┌────────────────┐
+// │ GlobalContext       │   │ Client data    │   │ Knowledge      │
+// │ (workspace-level,  │   │ (fresh/invoke) │   │ search         │
+// │  cacheable)        │   └───────┬────────┘   └───────┬────────┘
+// └───────┬────────────┘           │                     │
+//         │                        v                     v
+//         │              ┌──────────────────────────────────────┐
+//         └─────────────▶│         ReadOnlyContext               │
+//                        │  GlobalContext + MessageContext        │
+//                        └──────────────────────────────────────┘
 
 import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import type {
+  GlobalContext,
   ReadOnlyContext,
-  WorkspaceContext,
-  VerticalConfig,
-  CommunicationRule,
-  ClientContext,
-  MessageContext,
+  RecentMessage,
   BookingContext,
   FollowUpContext,
   NoteContext,
@@ -60,7 +57,7 @@ export async function assembleContext(
   ])
 
   return {
-    sessionKey: `workspace:${workspaceId}:client:${clientId}`,
+    // GlobalContext (workspace-level, cacheable)
     workspace: {
       businessName: workspace.business_name,
       timezone: workspace.timezone,
@@ -69,6 +66,10 @@ export async function assembleContext(
     },
     verticalConfig: parseVerticalConfig(workspace.vertical_config),
     communicationRules: parseCommunicationRules(workspace.communication_profile),
+    calendarConnected: !!workspace.calendar_config,
+
+    // MessageContext (per-client, per-message)
+    sessionKey: `workspace:${workspaceId}:client:${clientId}`,
     knowledgeChunks,
     client: {
       id: client.id,
@@ -145,7 +146,7 @@ async function loadRecentMessages(
   workspaceId: string,
   clientId: string,
   limit: number
-): Promise<MessageContext[]> {
+): Promise<RecentMessage[]> {
   const { data: conv } = await supabase
     .from('conversations')
     .select('id')

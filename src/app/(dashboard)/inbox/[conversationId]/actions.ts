@@ -217,7 +217,8 @@ export async function regenerateDraft(
     .single()
 
   if (latestMsg) {
-    await serviceClient.rpc('pgmq_send', {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (serviceClient.rpc as any)('pgmq_send', {
       queue_name: 'inbound_messages',
       msg: {
         message_id: latestMsg.id,
