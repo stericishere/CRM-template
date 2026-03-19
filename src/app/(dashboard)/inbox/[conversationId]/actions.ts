@@ -105,19 +105,27 @@ export async function sendDraftReply(
     })
     .eq('id', draftId)
 
-  // 4. POST to Baileys server: /send
+  // 4. POST to Baileys server: /send (authenticated)
   try {
     const baileysUrl = process.env.BAILEYS_SERVER_URL
+    const baileysSecret = process.env.BAILEYS_API_SECRET
     if (baileysUrl && clientPhone) {
-      await fetch(`${baileysUrl}/send`, {
+      const resp = await fetch(`${baileysUrl}/send`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(baileysSecret ? { 'x-api-secret': baileysSecret } : {}),
+        },
         body: JSON.stringify({
           workspaceId,
           to: clientPhone,
           content: finalText.trim(),
         }),
       })
+
+      if (!resp.ok) {
+        console.error('[send] Baileys dispatch failed:', resp.status, await resp.text().catch(() => ''))
+      }
     }
   } catch (err) {
     console.error('[send] Failed to dispatch via Baileys:', err)

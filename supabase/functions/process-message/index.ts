@@ -99,20 +99,27 @@ serve(async (_req) => {
         readCt: queueMsg.read_ct,
       })
 
-      try {
-        await supabase.from('inbound_dlq').insert({
+      // Send to DLQ via pgmq (inbound_dlq is a pgmq queue, not a regular table)
+      const { error: dlqError } = await supabase.rpc('pgmq_send', {
+        queue_name: 'inbound_dlq',
+        msg: {
+          ...payload,
           original_msg_id: queueMsg.msg_id,
-          queue_name: 'inbound_messages',
-          payload: queueMsg.message,
           read_ct: queueMsg.read_ct,
           failed_at: new Date().toISOString(),
-        })
-      } catch (dlqErr) {
-        // Log DLQ write failure but still delete from main queue to prevent
-        // infinite retry loops — operator must inspect logs for recovery.
-        console.error('DLQ write failed (message will be deleted anyway):', dlqErr)
+        },
+      })
+
+      if (dlqError) {
+        // DLQ write failed — do NOT delete from main queue, let VT expire for retry
+        console.error('DLQ write failed, leaving message in queue for retry:', dlqError.message)
+        return new Response(
+          JSON.stringify({ processed: 0, dlq_error: true }),
+          { status: 500 }
+        )
       }
 
+      // Only delete from main queue after successful DLQ write
       await supabase.rpc('pgmq_delete', {
         queue_name: 'inbound_messages',
         msg_id: queueMsg.msg_id,
@@ -178,27 +185,37 @@ serve(async (_req) => {
     }
 
     // -------------------------------------------------------------------------
-    // 5. Idempotency check: skip if a pending draft already exists for this
-    //    conversation (staff_action IS NULL means not yet acted on).
-    //    Prevents duplicate LLM calls on message re-delivery.
+    // 5. Idempotency check: skip if this specific message was already processed.
+    //    Check by message_id (not conversation) — a client may send multiple
+    //    messages before staff reviews the first draft. Each message deserves
+    //    its own draft.
     // -------------------------------------------------------------------------
     const { data: existingDraft, error: idempotencyError } = await supabase
-      .from('drafts')
+      .from('messages')
       .select('id')
-      .eq('conversation_id', payload.conversation_id)
-      .is('staff_action', null)
-      .limit(1)
-      .maybeSingle()
+      .eq('id', payload.message_id)
+      .single()
+
+    // Check if a draft was already generated for this specific inbound message
+    // by looking for a draft whose metadata references this message_id
+    const alreadyProcessed = existingDraft
+      ? await supabase
+          .from('drafts')
+          .select('id')
+          .eq('conversation_id', payload.conversation_id)
+          .eq('source_message_id', payload.message_id)
+          .limit(1)
+          .maybeSingle()
+      : null
 
     if (idempotencyError) {
-      console.error('Idempotency check failed (non-blocking, continuing):', idempotencyError.message)
-    } else if (existingDraft) {
-      console.log('Pending draft already exists, skipping AI pipeline:', {
-        conversationId: payload.conversation_id,
-        existingDraftId: existingDraft.id,
+      console.error('Idempotency check failed (non-blocking, continuing):', idempotencyError?.message)
+    } else if (alreadyProcessed?.data) {
+      console.log('Draft already exists for this message, skipping:', {
+        messageId: payload.message_id,
+        draftId: alreadyProcessed.data.id,
       })
 
-      // ACK the message — it was already processed on a prior delivery
       await supabase.rpc('pgmq_delete', {
         queue_name: 'inbound_messages',
         msg_id: queueMsg.msg_id,
