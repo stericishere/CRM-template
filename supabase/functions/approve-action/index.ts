@@ -24,6 +24,7 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { getSupabaseClient } from '../_shared/db.ts'
 import { executeApprovedAction } from '../_shared/action-executor.ts'
+import { bestEffortCancelTimer } from '../_shared/timer-helpers.ts'
 
 serve(async (req) => {
   if (req.method !== 'POST') {
@@ -133,7 +134,12 @@ serve(async (req) => {
       }
     }
 
-    // 5. Audit event (fire-and-log; failure is non-blocking)
+    // 5. Cancel draft_review_nudge timer — staff acted on the draft
+    if (action.draft_id) {
+      await bestEffortCancelTimer(action.draft_id, 'draft_review_nudge', 'staff_acted')
+    }
+
+    // 6. Audit event (fire-and-log; failure is non-blocking)
     try {
       await supabase.from('audit_events').insert({
         workspace_id: action.workspace_id,

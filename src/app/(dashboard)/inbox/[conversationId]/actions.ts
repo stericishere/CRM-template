@@ -4,6 +4,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { getServiceClient } from '@/lib/supabase/service'
 import { recordDraftEditSignal, determineStaffAction } from '@/lib/learning/record-signal'
+import { bestEffortStartTimer } from '@/lib/proactive/timer-helpers'
 
 // ─── Shared Helper ──────────────────────────────────────────────────────────
 
@@ -157,6 +158,17 @@ export async function sendDraftReply(
     .from('conversations')
     .update({ state: 'awaiting_client_reply' })
     .eq('id', conversationId)
+
+  // 6. Start stale_conversation timer (24h) — fire-and-forget
+  //    If the client doesn't reply within 24h, the timer scanner will
+  //    transition the conversation to follow_up_pending.
+  await bestEffortStartTimer(
+    workspaceId,
+    'stale_conversation',
+    'conversation',
+    conversationId,
+    24 * 60 * 60 * 1000 // 24 hours
+  )
 
   return { success: true }
 }

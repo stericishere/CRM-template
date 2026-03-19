@@ -3,6 +3,7 @@
 // The INSERT triggers Supabase Realtime ("draft ready" notification)
 
 import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { bestEffortStartTimer } from './timer-helpers.ts'
 
 interface SaveDraftParams {
   conversationId: string
@@ -48,6 +49,17 @@ export async function saveDraft(
     console.error('[draft_persistence] Failed to update conversation state:', stateError.message)
     // Non-fatal: draft is saved, staff will see it
   }
+
+  // Start draft_review_nudge timer (1h) — fire-and-forget
+  // If staff doesn't review the draft within 1 hour, the timer scanner
+  // will insert a staff_notifications reminder.
+  await bestEffortStartTimer(
+    params.workspaceId,
+    'draft_review_nudge',
+    'draft',
+    draft.id,
+    60 * 60 * 1000 // 1 hour
+  )
 
   return { draftId: draft.id }
 }

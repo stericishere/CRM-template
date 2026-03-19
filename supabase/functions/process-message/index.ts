@@ -51,6 +51,7 @@ import { createToolRegistry } from '../_shared/tool-registry.ts'
 import { evaluateApprovalPolicy } from '../_shared/approval-policy.ts'
 import { saveDraft, logLLMUsage } from '../_shared/draft-persistence.ts'
 import { estimateCost, PRO_MODEL } from '../_shared/llm-client.ts'
+import { bestEffortCancelTimer } from '../_shared/timer-helpers.ts'
 
 // VT raised to 120s to give the LLM pipeline time to complete before
 // the message becomes visible again for retry.
@@ -183,6 +184,16 @@ serve(async (_req) => {
       // Audit failure never blocks processing
       console.error('Audit write failed (non-blocking):', auditErr)
     }
+
+    // -------------------------------------------------------------------------
+    // 4b. Cancel stale_conversation timer — client just messaged back
+    //     Fire-and-forget: never blocks processing
+    // -------------------------------------------------------------------------
+    await bestEffortCancelTimer(
+      payload.conversation_id,
+      'stale_conversation',
+      'client_messaged'
+    )
 
     // -------------------------------------------------------------------------
     // 5. Idempotency check: skip if this specific message was already processed.

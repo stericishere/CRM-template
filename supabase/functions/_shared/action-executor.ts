@@ -19,6 +19,7 @@
 
 import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import type { ProposedAction } from './sprint2-types.ts'
+import { bestEffortCancelTimer } from './timer-helpers.ts'
 
 interface ExecutionResult {
   success: boolean
@@ -107,6 +108,16 @@ async function executeBookingCreate(
   })
 
   if (error) return { success: false, error: error.message }
+
+  // Cancel stale_conversation timer — booking confirms active engagement
+  if (action.conversationId) {
+    await bestEffortCancelTimer(
+      action.conversationId,
+      'stale_conversation',
+      'booking_confirmed'
+    )
+  }
+
   return {
     success: true,
     metadata: { appointmentType, startTime, durationMinutes, endTime: endDate.toISOString() },
