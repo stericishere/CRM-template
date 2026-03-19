@@ -1,0 +1,86 @@
+import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
+
+/**
+ * On inbound message: find the most recent draft_edit_signal with client_replied=null
+ * for this conversation. If found within 72h window: set client_replied=true + latency.
+ *
+ * Flow:
+ *   inbound message received
+ *        |
+ *        v
+ *   SELECT latest signal WHERE client_replied IS NULL
+ *   AND conversation_id = current AND created_at > now() - 72h
+ *        |
+ *        +-- found -> UPDATE client_replied=true, latency=(now - signal.created_at)
+ *        |
+ *        +-- not found -> no-op
+ */
+export async function trackReplySignal(
+  supabase: SupabaseClient,
+  conversationId: string,
+  workspaceId: string
+): Promise<void> {
+  try {
+    // Find the most recent pending signal for this conversation.
+    // Uses the partial index idx_draft_edit_signals_reply_pending
+    // (workspace_id, created_at WHERE client_replied IS NULL).
+    //
+    // We filter by conversation_id first (direct match), falling back to
+    // workspace_id isolation if conversation_id is null on the signal row.
+    const { data: signal, error: selectError } = await supabase
+      .from('draft_edit_signals')
+      .select('id, created_at, conversation_id')
+      .eq('workspace_id', workspaceId)
+      .is('client_replied', null)
+      .in('staff_action', ['sent_as_is', 'edited_and_sent'])
+      .gte('created_at', new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString())
+      .order('created_at', { ascending: false })
+      .limit(10) // fetch a small batch to filter by conversation_id in JS
+
+    if (selectError) {
+      console.error('[reply-tracker] Signal lookup failed:', selectError.message)
+      return
+    }
+
+    if (!signal || signal.length === 0) {
+      return
+    }
+
+    // Match by conversation_id: prefer exact match, then fall back to null conversation_id
+    const match =
+      signal.find((s) => s.conversation_id === conversationId) ??
+      signal.find((s) => s.conversation_id === null)
+
+    if (!match) {
+      return
+    }
+
+    // Calculate latency in minutes (signal.created_at -> now)
+    const signalCreatedAt = new Date(match.created_at).getTime()
+    const latencyMinutes = Math.round((Date.now() - signalCreatedAt) / (1000 * 60))
+
+    const { error: updateError } = await supabase
+      .from('draft_edit_signals')
+      .update({
+        client_replied: true,
+        client_reply_latency_minutes: latencyMinutes,
+        // Backfill conversation_id if it was null on the signal row
+        ...(match.conversation_id === null ? { conversation_id: conversationId } : {}),
+      })
+      .eq('id', match.id)
+
+    if (updateError) {
+      console.error('[reply-tracker] Signal update failed:', updateError.message)
+      return
+    }
+
+    console.log('[reply-tracker] Signal updated:', {
+      signalId: match.id,
+      conversationId,
+      latencyMinutes,
+    })
+  } catch (err) {
+    // Non-blocking: never throw
+    console.error('[reply-tracker] Unexpected error:', err)
+  }
+}

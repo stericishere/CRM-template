@@ -23,6 +23,8 @@ import { bestEffortCancelTimer } from '../_shared/timer-helpers.ts'
 import { scanAndPropose } from '../_shared/scan-and-propose.ts'
 import { callLLM, FLASH_MODEL, estimateCost } from '../_shared/llm-client.ts'
 import { logLLMUsage } from '../_shared/draft-persistence.ts'
+import { calculateUrgency } from '../_shared/urgency-scoring.ts'
+import type { UrgencyInput } from '../_shared/urgency-scoring.ts'
 import type { ScanResult, DailyJournalStats, LearningSnapshot } from '../_shared/proactive-types.ts'
 
 // ─── Types ──────────────────────────────────────────────────
@@ -100,6 +102,31 @@ serve(async (req) => {
     // Step 0: Stale conversation sweep
     reports.push(await runStep0_StaleConversationSweep(supabase, workspaceId))
 
+    // Step 0b: Observation window closer — close stale draft_edit_signals
+    // Signals older than 72h with no client reply are presumed non-replied.
+    try {
+      const { data: closedSignals, error: closeError } = await supabase
+        .from('draft_edit_signals')
+        .update({ client_replied: false })
+        .is('client_replied', null)
+        .lt('created_at', new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString())
+        .select('id')
+
+      if (closeError) {
+        console.warn(
+          `[morning-scan] [${config.business_name}] Failed to close observation windows:`,
+          closeError.message
+        )
+      } else if (closedSignals && closedSignals.length > 0) {
+        console.log(
+          `[morning-scan] [${config.business_name}] Closed ${closedSignals.length} stale observation window(s)`
+        )
+      }
+    } catch (obsErr) {
+      // Non-fatal: don't block scans
+      console.warn('[morning-scan] Observation window closer error (non-fatal):', obsErr)
+    }
+
     // Scan 1: Appointment reminders
     reports.push(await runScan1_AppointmentReminders(supabase, workspaceId, config))
 
@@ -114,6 +141,17 @@ serve(async (req) => {
 
     // Scan 5: Daily journal
     reports.push(await runScan5_DailyJournal(supabase, workspaceId, config))
+
+    // ─── Urgency scoring + ranking for proposed actions ─────
+    // Score all pending proposed_actions from this run, then rank by urgency.
+    try {
+      await scoreAndRankProposedActions(supabase, workspaceId, config)
+    } catch (urgencyErr) {
+      console.error(
+        `[morning-scan] [${config.business_name}] Urgency scoring failed (non-fatal):`,
+        urgencyErr
+      )
+    }
 
     // ─── Compute final status ───────────────────────────────
     const errorCount = reports.filter((r) => r.status === 'error').length
@@ -892,5 +930,150 @@ async function runScan5_DailyJournal(
   } catch (err) {
     return { step: 'scan5_journal', status: 'error', found: 0, actioned: 0, error: String(err) }
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Urgency Scoring + Ranking
+// ═══════════════════════════════════════════════════════════════
+//
+// After all scans produce proposed_actions, score each one using
+// calculateUrgency and write urgency_score + urgency_rank back
+// to the proposed_actions rows.
+//
+//   proposed_actions (status=pending) ──> calculateUrgency(input) ──> UPDATE urgency_score
+//                                                                 └──> rank within workspace
+
+async function scoreAndRankProposedActions(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  workspaceId: string,
+  _config: WorkspaceConfig
+): Promise<void> {
+  // 1. Load all pending proposed_actions for this workspace that haven't been scored
+  const { data: actions, error: queryError } = await supabase
+    .from('proposed_actions')
+    .select('id, action_type, client_id, conversation_id, payload')
+    .eq('workspace_id', workspaceId)
+    .eq('status', 'pending')
+    .is('urgency_score', null)
+
+  if (queryError) {
+    console.error('[morning-scan] [urgency] Failed to load proposed_actions:', queryError.message)
+    return
+  }
+
+  if (!actions || actions.length === 0) {
+    return
+  }
+
+  // 2. For each action, gather context and score
+  const scored: Array<{ id: string; score: number; reason: string }> = []
+
+  for (const action of actions) {
+    try {
+      // Gather client context for scoring
+      const { data: client } = await supabase
+        .from('clients')
+        .select('lifecycle_status, last_contacted_at')
+        .eq('id', action.client_id)
+        .single()
+
+      // Check for upcoming bookings
+      let hasUpcomingBooking = false
+      let bookingDaysAway: number | null = null
+
+      const { data: nextBooking } = await supabase
+        .from('bookings')
+        .select('start_time, confirmation_status')
+        .eq('client_id', action.client_id)
+        .eq('workspace_id', workspaceId)
+        .gte('start_time', new Date().toISOString())
+        .order('start_time', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+
+      if (nextBooking) {
+        hasUpcomingBooking = true
+        const msAway = new Date(nextBooking.start_time).getTime() - Date.now()
+        bookingDaysAway = Math.max(0, Math.floor(msAway / (24 * 60 * 60 * 1000)))
+
+        // Override to unconfirmed scenario if confirmation_status is pending
+        if (nextBooking.confirmation_status === 'pending') {
+          hasUpcomingBooking = true
+        }
+      }
+
+      // Calculate days since last contact
+      let daysSinceLastContact: number | null = null
+      if (client?.last_contacted_at) {
+        const msSince = Date.now() - new Date(client.last_contacted_at).getTime()
+        daysSinceLastContact = Math.floor(msSince / (24 * 60 * 60 * 1000))
+      }
+
+      // Check follow-up overdue days from payload
+      const payload = (action.payload ?? {}) as Record<string, unknown>
+      let followUpDaysOverdue: number | null = null
+      if (payload.reason === 'follow_up_candidate' && payload.follow_up_check_days) {
+        // The follow-up was identified because the client hasn't replied in follow_up_check_days
+        // Overdue = days_since_last_contact - follow_up_check_days (if positive)
+        if (daysSinceLastContact !== null) {
+          const checkDays = Number(payload.follow_up_check_days)
+          followUpDaysOverdue = Math.max(0, daysSinceLastContact - checkDays)
+        }
+      }
+
+      // Check if AI made a promise (from payload metadata)
+      const isPromiseMade = Boolean(payload.is_promise_made)
+
+      const urgencyInput: UrgencyInput = {
+        action_type: action.action_type,
+        client_lifecycle_status: client?.lifecycle_status ?? 'unknown',
+        days_since_last_contact: daysSinceLastContact,
+        has_upcoming_booking: hasUpcomingBooking,
+        booking_days_away: bookingDaysAway,
+        follow_up_days_overdue: followUpDaysOverdue,
+        is_promise_made: isPromiseMade,
+      }
+
+      const result = calculateUrgency(urgencyInput)
+      scored.push({ id: action.id, score: result.score, reason: result.reason })
+    } catch (err) {
+      console.error(
+        `[morning-scan] [urgency] Error scoring action ${action.id}:`,
+        err
+      )
+    }
+  }
+
+  if (scored.length === 0) return
+
+  // 3. Sort by score descending to assign rank
+  scored.sort((a, b) => b.score - a.score)
+
+  // 4. Write urgency_score and urgency_rank back to each proposed_action
+  for (let i = 0; i < scored.length; i++) {
+    const item = scored[i]
+    const rank = i + 1
+
+    const { error: updateError } = await supabase
+      .from('proposed_actions')
+      .update({
+        urgency_score: item.score,
+        urgency_rank: rank,
+        urgency_reason: item.reason,
+      })
+      .eq('id', item.id)
+
+    if (updateError) {
+      console.error(
+        `[morning-scan] [urgency] Failed to update action ${item.id}:`,
+        updateError.message
+      )
+    }
+  }
+
+  console.log(
+    `[morning-scan] [urgency] Scored ${scored.length} action(s). ` +
+    `Top: score=${scored[0]?.score} reason="${scored[0]?.reason}"`
+  )
 }
 
