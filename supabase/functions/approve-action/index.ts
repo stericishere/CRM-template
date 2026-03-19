@@ -77,6 +77,11 @@ serve(async (req) => {
         .eq('id', action_id)
 
       if (updateError) {
+        // Unclaim so staff can retry — without this the row is stranded
+        await supabase
+          .from('proposed_actions')
+          .update({ reviewed_by: null, reviewed_at: null })
+          .eq('id', action_id)
         return new Response(JSON.stringify({ error: updateError.message }), { status: 500 })
       }
     }
@@ -123,8 +128,18 @@ serve(async (req) => {
         .eq('id', action_id)
 
       if (updateError) {
-        // Execution succeeded but status update failed — log but don't fail
-        console.error('[approve-action] Status update failed after execution:', updateError.message)
+        // Execution succeeded but status update failed — unclaim so staff can retry.
+        // The side effect already ran, but the row must not be stranded as
+        // permanently unclaimable (reviewed_by set, status still 'pending').
+        console.error('[approve-action] Status update failed after execution, unclaiming:', updateError.message)
+        await supabase
+          .from('proposed_actions')
+          .update({ reviewed_by: null, reviewed_at: null })
+          .eq('id', action_id)
+        return new Response(
+          JSON.stringify({ error: `Status update failed: ${updateError.message}`, retryable: true }),
+          { status: 500 }
+        )
       }
     }
 

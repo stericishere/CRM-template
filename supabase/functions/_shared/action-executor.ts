@@ -160,7 +160,11 @@ async function executeMessageSend(
   supabase: SupabaseClient,
   action: ProposedAction
 ): Promise<ExecutionResult> {
-  // 1. Resolve message content from draft (if linked) or payload
+  // 1. Resolve message content — check sources in priority order:
+  //    a) payload.messageContent (explicit content)
+  //    b) linked draft via draft_id
+  //    c) most recent draft for this conversation (worker may not backfill draft_id)
+  //    d) generate from scan metadata (appointment reminders, follow-ups)
   let messageContent = action.payload.messageContent as string | undefined
 
   if (!messageContent && action.draftId) {
@@ -170,6 +174,25 @@ async function executeMessageSend(
       .eq('id', action.draftId)
       .single()
     messageContent = (draft?.edited_content ?? draft?.content) as string | undefined
+  }
+
+  // Fallback: look up most recent draft for this conversation (Client Worker
+  // may have generated a draft without backfilling proposed_actions.draft_id)
+  if (!messageContent && action.conversationId) {
+    const { data: latestDraft } = await supabase
+      .from('drafts')
+      .select('content, edited_content')
+      .eq('conversation_id', action.conversationId)
+      .eq('workspace_id', action.workspaceId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    messageContent = (latestDraft?.edited_content ?? latestDraft?.content) as string | undefined
+  }
+
+  // Fallback: generate from scan metadata for known scan types
+  if (!messageContent && action.payload.source === 'morning_scan') {
+    messageContent = buildScanMessage(action.payload)
   }
 
   if (!messageContent) {
@@ -317,4 +340,30 @@ async function executeLastContactedUpdate(
 
   if (error) return { success: false, error: error.message }
   return { success: true }
+}
+
+/**
+ * Build a message from morning-scan metadata when no draft or explicit
+ * messageContent exists. Covers appointment reminders and follow-up nudges.
+ */
+function buildScanMessage(payload: Record<string, unknown>): string | undefined {
+  const scanType = payload.scan_type as string | undefined
+  const clientName = (payload.client_name as string) || 'there'
+
+  if (scanType === 'appointment_reminder') {
+    const appointmentType = payload.appointment_type as string
+    const startTime = payload.start_time as string
+    if (!appointmentType || !startTime) return undefined
+    const time = new Date(startTime).toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+    return `Hi ${clientName}, this is a friendly reminder about your ${appointmentType} appointment tomorrow at ${time}. Please let us know if you need to make any changes.`
+  }
+
+  if (scanType === 'follow_up_candidate' || scanType === 'booking_confirmation_check') {
+    return `Hi ${clientName}, just checking in — is there anything we can help you with?`
+  }
+
+  return undefined
 }

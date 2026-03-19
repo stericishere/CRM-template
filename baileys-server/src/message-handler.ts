@@ -133,17 +133,21 @@ export async function handleInboundMessage(
 
     if (selectError) throw selectError
 
-    // Skip processing for soft-deleted clients — don't resurrect archived records
-    if (client.deleted_at) {
-      logger.debug({ workspaceId, phone }, 'Client is soft-deleted, skipping message')
-      return
+    // Reactivate client if needed — this handler only runs for live
+    // messages (type='notify' in socket-manager), so a message here is
+    // genuine re-engagement, even from a previously archived client.
+    const clientUpdate: Record<string, unknown> = {
+      last_contacted_at: new Date().toISOString(),
     }
 
-    // Reactivate inactive client, or just update last_contacted_at
-    const clientUpdate =
-      client.lifecycle_status === 'inactive'
-        ? { lifecycle_status: 'open', last_contacted_at: new Date().toISOString() }
-        : { last_contacted_at: new Date().toISOString() }
+    if (client.deleted_at) {
+      // Live message from a previously archived client — reactivate
+      clientUpdate.deleted_at = null
+      clientUpdate.lifecycle_status = 'open'
+      logger.info({ workspaceId, phone }, 'Reactivating soft-deleted client on live message')
+    } else if (client.lifecycle_status === 'inactive') {
+      clientUpdate.lifecycle_status = 'open'
+    }
 
     await supabase.from('clients').update(clientUpdate).eq('id', client.id as string)
 
