@@ -7,6 +7,7 @@ import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
 interface SaveDraftParams {
   conversationId: string
   workspaceId: string
+  sourceMessageId: string
   content: string
   intentClassified: string
   confidenceScore: number
@@ -23,6 +24,7 @@ export async function saveDraft(
     .insert({
       conversation_id: params.conversationId,
       workspace_id: params.workspaceId,
+      source_message_id: params.sourceMessageId,
       content: params.content,
       intent_classified: params.intentClassified,
       confidence_score: params.confidenceScore,

@@ -5,8 +5,11 @@
 -- All statements are idempotent (IF NOT EXISTS / OR REPLACE).
 -- ============================================================
 
--- 1. Add scenario_type to drafts (F-05 / F-10 classification)
+-- 1. Add scenario_type + source_message_id to drafts (F-05 / F-10 classification + idempotency)
 ALTER TABLE drafts ADD COLUMN IF NOT EXISTS scenario_type TEXT;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS source_message_id UUID REFERENCES messages(id);
+CREATE INDEX IF NOT EXISTS idx_drafts_source_message
+  ON drafts(conversation_id, source_message_id);
 
 -- 2. Extend proposed_actions (F-06: link actions to drafts, expiry, renotify)
 ALTER TABLE proposed_actions

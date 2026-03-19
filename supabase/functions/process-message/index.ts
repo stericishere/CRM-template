@@ -287,6 +287,7 @@ serve(async (_req) => {
       const { draftId } = await saveDraft(supabase, {
         conversationId: payload.conversation_id,
         workspaceId: payload.workspace_id,
+        sourceMessageId: payload.message_id,
         content: workerResult.draft,
         intentClassified: workerResult.intent,
         confidenceScore: workerResult.confidence,
