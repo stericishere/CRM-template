@@ -319,9 +319,10 @@ serve(async (_req) => {
           .insert(rows)
 
         if (actionsError) {
-          // Non-fatal: draft is saved and visible to staff; actions can be
-          // re-proposed on the next run. Log for operator visibility.
-          console.error('[pipeline] Failed to insert proposed_actions:', actionsError.message)
+          // FATAL: actions are lost if we ACK the message here, because the
+          // idempotency check will skip this message on retry. Throw to let
+          // the VT expire and retry the entire pipeline.
+          throw new Error(`Failed to insert proposed_actions: ${actionsError.message}`)
         } else {
           console.log('[pipeline] Proposed actions saved', {
             review: reviewActions.length,

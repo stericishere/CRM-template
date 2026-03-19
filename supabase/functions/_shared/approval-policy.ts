@@ -4,9 +4,10 @@
 
 import type { ProposedAction, ApprovalTier, ProposedActionType } from './sprint2-types.ts'
 
-// Fixed MVP policy — only appointments are auto, everything else requires human review
+// Fixed MVP policy — no auto actions in MVP, everything requires human review.
+// Auto tier is reserved for future low-risk actions (e.g. appointment reminders from cron jobs).
 const AUTO_ACTIONS: Set<ProposedActionType> = new Set([
-  'booking_create',
+  // Empty for MVP — all actions go through staff review
 ])
 
 const HUMAN_ONLY_ACTIONS: Set<ProposedActionType> = new Set([
