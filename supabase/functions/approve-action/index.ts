@@ -71,24 +71,24 @@ serve(async (req) => {
       )
     }
 
-    // 3. Update action status
-    const { error: updateError } = await supabase
-      .from('proposed_actions')
-      .update({
-        status: decision,
-        resolved_at: new Date().toISOString(),
-        resolved_by: staff_id,
-      })
-      .eq('id', action_id)
+    // 3. If rejected, update status immediately and return
+    if (decision === 'rejected') {
+      const { error: updateError } = await supabase
+        .from('proposed_actions')
+        .update({
+          status: 'rejected',
+          resolved_at: new Date().toISOString(),
+          resolved_by: staff_id,
+        })
+        .eq('id', action_id)
 
-    if (updateError) {
-      return new Response(
-        JSON.stringify({ error: updateError.message }),
-        { status: 500 }
-      )
+      if (updateError) {
+        return new Response(JSON.stringify({ error: updateError.message }), { status: 500 })
+      }
     }
 
-    // 4. If approved, execute the action
+    // 4. If approved, execute FIRST — only mark approved after success.
+    //    If execution fails, the action stays pending so staff can retry.
     let executionResult = null
     if (decision === 'approved') {
       executionResult = await executeApprovedAction(supabase, {
@@ -105,9 +105,31 @@ serve(async (req) => {
       })
 
       if (!executionResult.success) {
-        console.error('[approve-action] Execution failed:', executionResult.error)
-        // Don't revert the approval — the action status stays approved
-        // Staff can see the execution error
+        console.error('[approve-action] Execution failed, action stays pending:', executionResult.error)
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: `Action execution failed: ${executionResult.error}`,
+            retryable: true,
+          }),
+          { status: 500 }
+        )
+      }
+
+      // Execution succeeded — now mark as approved
+      const { error: updateError } = await supabase
+        .from('proposed_actions')
+        .update({
+          status: 'approved',
+          resolved_at: new Date().toISOString(),
+          resolved_by: staff_id,
+        })
+        .eq('id', action_id)
+
+      if (updateError) {
+        // Execution succeeded but status update failed — log but don't fail
+        // The action was executed; worst case staff sees it as pending still
+        console.error('[approve-action] Status update failed after execution:', updateError.message)
       }
     }
 
