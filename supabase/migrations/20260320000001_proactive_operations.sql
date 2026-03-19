@@ -139,11 +139,15 @@ ALTER TABLE workspaces
   ADD COLUMN IF NOT EXISTS reminder_mode TEXT NOT NULL DEFAULT 'template'
     CHECK (reminder_mode IN ('template', 'ai_draft'));
 
--- 2d. Booking reminder tracking
+-- 2d. Heartbeat tracking
+ALTER TABLE workspaces
+  ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ;
+
+-- 2e. Booking reminder tracking
 ALTER TABLE bookings
   ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ;
 
--- 2e. Client compaction tracking
+-- 2f. Client compaction tracking
 ALTER TABLE clients
   ADD COLUMN IF NOT EXISTS last_compacted_at TIMESTAMPTZ;
 

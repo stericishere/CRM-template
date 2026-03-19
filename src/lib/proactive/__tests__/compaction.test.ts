@@ -251,7 +251,7 @@ describe('PerWorkspaceCompaction', () => {
 
     // Should have called LLM
     expect(mockDeps.callLLM).toHaveBeenCalledTimes(1)
-    const llmCall = (mockDeps.callLLM as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const llmCall = (mockDeps.callLLM as ReturnType<typeof vi.fn>).mock.calls[0]![0]
     expect(llmCall.systemPrompt).toContain('memory compaction assistant')
     expect(llmCall.messages[0].content).toContain('New Messages (yesterday)')
     expect(llmCall.messages[0].content).toContain('first compaction')
@@ -285,7 +285,7 @@ describe('PerWorkspaceCompaction', () => {
     expect(result).toBe('compacted')
 
     // LLM prompt should include existing summary
-    const llmCall = (mockDeps.callLLM as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const llmCall = (mockDeps.callLLM as ReturnType<typeof vi.fn>).mock.calls[0]![0]
     expect(llmCall.messages[0].content).toContain('Existing Summary (version 3)')
     expect(llmCall.messages[0].content).toContain('regular customer')
 
@@ -395,7 +395,7 @@ describe('PerWorkspaceCompaction', () => {
     const result = await compactClient(mockDeps, 'ws-1', 'client-1', '2026-03-18')
 
     expect(result).toBe('compacted')
-    const llmCall = (mockDeps.callLLM as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const llmCall = (mockDeps.callLLM as ReturnType<typeof vi.fn>).mock.calls[0]![0]
     expect(llmCall.messages[0].content).toContain('(media message)')
   })
 
@@ -412,7 +412,7 @@ describe('PerWorkspaceCompaction', () => {
   it('should include compaction system prompt in LLM call', async () => {
     await compactClient(mockDeps, 'ws-1', 'client-1', '2026-03-18')
 
-    const llmCall = (mockDeps.callLLM as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const llmCall = (mockDeps.callLLM as ReturnType<typeof vi.fn>).mock.calls[0]![0]
     expect(llmCall.systemPrompt).toBe(COMPACTION_SYSTEM_PROMPT)
     expect(llmCall.maxTokens).toBe(2048)
   })
