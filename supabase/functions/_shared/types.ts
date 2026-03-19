@@ -89,6 +89,11 @@ export type AuditActionType =
   | 'knowledge_updated'
   | 'sop_updated'
   | 'lifecycle_status_updated'
+  | 'conversation_state_transition'
+  | 'cron_scan_completed'
+  | 'timer_fired'
+  | 'timer_cancelled'
+  | 'client_marked_inactive'
 
 // Re-export Sprint 2 types (F-05, F-06, F-10)
 export type {
@@ -101,3 +106,20 @@ export type {
   StaffAction,
   DraftEditSignalInput,
 } from './sprint2-types.ts'
+
+// Re-export proactive operations types
+export type {
+  ConversationState,
+  ConversationEvent,
+  TransitionTriggerSource,
+  TimerType,
+  TimerStatus,
+  PendingTimer,
+  ScanConfig,
+  ScanResult,
+  CronRunLog,
+  DailyJournal,
+  DailyJournalStats,
+  LearningSnapshot,
+  StaffNotification,
+} from './proactive-types.ts'
