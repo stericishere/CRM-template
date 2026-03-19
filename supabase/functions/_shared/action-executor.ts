@@ -66,18 +66,52 @@ async function executeBookingCreate(
   supabase: SupabaseClient,
   action: ProposedAction
 ): Promise<ExecutionResult> {
+  const appointmentType = action.payload.appointmentType as string
+  const startTime = action.payload.startTime as string
+  const notes = (action.payload.notes as string) ?? null
+
+  if (!appointmentType || !startTime) {
+    return { success: false, error: 'Missing appointmentType or startTime in payload' }
+  }
+
+  // Look up service duration from workspace vertical_config
+  const { data: workspace } = await supabase
+    .from('workspaces')
+    .select('vertical_config')
+    .eq('id', action.workspaceId)
+    .single()
+
+  const verticalConfig = workspace?.vertical_config as Record<string, unknown> | null
+  const appointmentTypes = Array.isArray(verticalConfig?.appointmentTypes)
+    ? (verticalConfig.appointmentTypes as Array<{ name: string; durationMinutes?: number }>)
+    : []
+
+  const serviceConfig = appointmentTypes.find(
+    t => t.name.toLowerCase() === appointmentType.toLowerCase()
+  )
+  const durationMinutes = serviceConfig?.durationMinutes ?? 60 // default 60 min
+
+  // Compute end_time from start_time + duration
+  const startDate = new Date(startTime)
+  const endDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000)
+
   const { error } = await supabase.from('bookings').insert({
     workspace_id: action.workspaceId,
     client_id: action.clientId,
-    appointment_type: action.payload.appointmentType,
-    start_time: action.payload.startTime,
+    appointment_type: appointmentType,
+    start_time: startDate.toISOString(),
+    end_time: endDate.toISOString(),
+    duration_minutes: durationMinutes,
     status: 'confirmed',
     confirmation_status: 'confirmed',
-    notes: action.payload.notes ?? null,
+    notes,
   })
 
   if (error) return { success: false, error: error.message }
-  return { success: true }
+  return {
+    success: true,
+    metadata: { appointmentType, startTime, durationMinutes, endTime: endDate.toISOString() },
+  }
 }
 
 async function executeClientUpdate(

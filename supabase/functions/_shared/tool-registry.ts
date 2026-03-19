@@ -99,11 +99,17 @@ function toolParamsToJsonSchema(toolName: string): Record<string, unknown> {
     calendar_book: {
       type: 'object',
       properties: {
-        slot_id: { type: 'string', description: 'Time slot identifier' },
-        appointment_type: { type: 'string', description: 'Type of appointment' },
+        appointment_type: {
+          type: 'string',
+          description: 'Service type (must match one of the configured appointment types)',
+        },
+        start_time: {
+          type: 'string',
+          description: 'Proposed start time (ISO 8601, e.g. 2026-03-20T14:00:00+08:00)',
+        },
         notes: { type: 'string', description: 'Additional notes (optional)' },
       },
-      required: ['slot_id', 'appointment_type'],
+      required: ['appointment_type', 'start_time'],
     },
 
     update_client: {
@@ -204,20 +210,25 @@ export function createToolRegistry(supabase: SupabaseClient): ToolRegistry {
     // -----------------------------------------------------------------------
     calendar_book: {
       name: 'calendar_book',
-      description: 'Propose a booking for a specific time slot. Requires staff approval.',
+      description:
+        'Propose a booking for a client. Specify the service type and start time. ' +
+        'Duration is determined by the service type configuration. Requires staff approval.',
       authority: 'propose_write',
       fixedParams: {},
       execute: async (params): Promise<ToolResult> => {
+        const appointmentType = params.appointment_type as string
+        const startTime = params.start_time as string
+
         const action: ProposedAction = {
           workspaceId: params.workspaceId as string,
           clientId: params.clientId as string,
           conversationId: params.conversationId as string,
           actionType: 'booking_create',
-          summary: `Book ${params.appointment_type as string} appointment`,
+          summary: `Book ${appointmentType} at ${startTime}`,
           tier: 'review',
           payload: {
-            slotId: params.slot_id,
-            appointmentType: params.appointment_type,
+            appointmentType,
+            startTime,
             notes: params.notes ?? null,
           },
           status: 'pending',
