@@ -283,7 +283,10 @@ serve(async (_req) => {
       const { auto: autoActions, review: reviewActions, humanOnly: humanOnlyActions } =
         evaluateApprovalPolicy(workerResult.proposedActions)
 
-      // 9. Save draft to drafts table (INSERT triggers Supabase Realtime)
+      // 9. Save draft + proposed actions
+      //    Draft save triggers Supabase Realtime ("draft ready" notification).
+      //    Proposed actions must be saved TOGETHER with the draft — if actions
+      //    fail but draft succeeds, the idempotency check would skip retries.
       const { draftId } = await saveDraft(supabase, {
         conversationId: payload.conversation_id,
         workspaceId: payload.workspace_id,
@@ -298,8 +301,6 @@ serve(async (_req) => {
       console.log('[pipeline] Draft saved', { draftId })
 
       // 10. Save review + human_only actions to proposed_actions table.
-      //     Auto-tier actions were already executed by the tool-registry
-      //     (e.g. create_note inserts directly).
       const pendingActions = [...reviewActions, ...humanOnlyActions]
       if (pendingActions.length > 0) {
         const rows = pendingActions.map(action => ({
@@ -319,17 +320,18 @@ serve(async (_req) => {
           .insert(rows)
 
         if (actionsError) {
-          // FATAL: actions are lost if we ACK the message here, because the
-          // idempotency check will skip this message on retry. Throw to let
-          // the VT expire and retry the entire pipeline.
+          // Actions failed but draft exists — delete the draft so retry
+          // recreates both. Without this, idempotency would skip the message.
+          console.error('[pipeline] proposed_actions insert failed, rolling back draft:', actionsError.message)
+          await supabase.from('drafts').delete().eq('id', draftId)
           throw new Error(`Failed to insert proposed_actions: ${actionsError.message}`)
-        } else {
-          console.log('[pipeline] Proposed actions saved', {
-            review: reviewActions.length,
-            humanOnly: humanOnlyActions.length,
-            auto: autoActions.length,
-          })
         }
+
+        console.log('[pipeline] Proposed actions saved', {
+          review: reviewActions.length,
+          humanOnly: humanOnlyActions.length,
+          auto: autoActions.length,
+        })
       }
 
       // 11. Log LLM usage (best-effort, failures are logged inside logLLMUsage)
