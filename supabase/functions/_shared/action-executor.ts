@@ -162,9 +162,12 @@ async function executeMessageSend(
 ): Promise<ExecutionResult> {
   // 1. Resolve message content — check sources in priority order:
   //    a) payload.messageContent (explicit content)
-  //    b) linked draft via draft_id
-  //    c) most recent draft for this conversation (worker may not backfill draft_id)
-  //    d) generate from scan metadata (appointment reminders, follow-ups)
+  //    b) linked draft via draft_id (only the specific draft tied to this action)
+  //    c) generate from scan metadata (appointment reminders, follow-ups)
+  //
+  // NOTE: We intentionally do NOT fall back to "latest conversation draft" —
+  // that risks sending an unrelated older draft when the intended one hasn't
+  // been generated yet.
   let messageContent = action.payload.messageContent as string | undefined
 
   if (!messageContent && action.draftId) {
@@ -174,20 +177,6 @@ async function executeMessageSend(
       .eq('id', action.draftId)
       .single()
     messageContent = (draft?.edited_content ?? draft?.content) as string | undefined
-  }
-
-  // Fallback: look up most recent draft for this conversation (Client Worker
-  // may have generated a draft without backfilling proposed_actions.draft_id)
-  if (!messageContent && action.conversationId) {
-    const { data: latestDraft } = await supabase
-      .from('drafts')
-      .select('content, edited_content')
-      .eq('conversation_id', action.conversationId)
-      .eq('workspace_id', action.workspaceId)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    messageContent = (latestDraft?.edited_content ?? latestDraft?.content) as string | undefined
   }
 
   // Fallback: generate from scan metadata for known scan types

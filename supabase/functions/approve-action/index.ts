@@ -125,12 +125,18 @@ serve(async (req) => {
         .eq('id', action_id)
 
       if (updateError) {
-        console.error('[approve-action] Status update failed after execution, unclaiming:', updateError.message)
-        await unclaim()
-        return new Response(
-          JSON.stringify({ error: `Status update failed: ${updateError.message}`, retryable: true }),
-          { status: 500 }
-        )
+        // Side effect already ran — do NOT unclaim (that would make it retryable
+        // and re-execute the booking/message/note). Force-set status instead.
+        console.error('[approve-action] Status update failed after execution, retrying:', updateError.message)
+        const { error: retryError } = await supabase
+          .from('proposed_actions')
+          .update({ status: 'approved' })
+          .eq('id', action_id)
+        if (retryError) {
+          // Last resort: log for manual intervention. The row is claimed
+          // (reviewed_by set) so it won't be re-executed by another request.
+          console.error('[approve-action] CRITICAL: cannot finalize action after execution:', retryError.message)
+        }
       }
     }
 
