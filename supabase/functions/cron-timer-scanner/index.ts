@@ -87,9 +87,14 @@ serve(async (_req) => {
       )
 
       for (const result of results) {
-        if (result.status === 'fulfilled' && result.value) {
-          fired++
-        } else if (result.status === 'rejected') {
+        if (result.status === 'fulfilled') {
+          switch (result.value) {
+            case 'fired': fired++; break
+            case 'error': errors++; break
+            case 'skipped': break // lock lost to another scanner — not an error
+          }
+        } else {
+          // Promise itself rejected (unexpected — processTimer catches internally)
           errors++
         }
       }
@@ -131,20 +136,23 @@ serve(async (_req) => {
 
 // ─── Per-Timer Processing ──────────────────────────────────────────────────
 
+type TimerResult = 'fired' | 'skipped' | 'error'
+
 async function processTimer(
   supabase: ReturnType<typeof getSupabaseClient>,
   timer: PendingTimer
-): Promise<boolean> {
+): Promise<TimerResult> {
   // Optimistic lock — mark as fired before dispatch
   // If another scanner instance already grabbed it, this UPDATE matches 0 rows
+  // NOTE: { count: 'exact' } is required for Supabase to populate the count field
   const { error: lockError, count } = await supabase
     .from('pending_timer')
-    .update({ status: 'fired', fired_at: new Date().toISOString() })
+    .update({ status: 'fired', fired_at: new Date().toISOString() }, { count: 'exact' })
     .eq('timer_id', timer.timer_id)
     .eq('status', 'pending')
 
   // Lock failed — another instance got it, or status already changed
-  if (lockError || count === 0) return false
+  if (lockError || count === 0) return 'skipped'
 
   try {
     switch (timer.timer_type) {
@@ -157,7 +165,7 @@ async function processTimer(
       default:
         console.warn(`[timer-scanner] Unknown timer type: ${timer.timer_type}`)
     }
-    return true
+    return 'fired'
   } catch (err) {
     // Mark as error — visible in heartbeat alerts
     const errorMessage = err instanceof Error ? err.message : String(err)
@@ -172,7 +180,7 @@ async function processTimer(
       .eq('timer_id', timer.timer_id)
 
     console.error(`[timer-scanner] Handler failed for ${timer.timer_type}:`, err)
-    return false
+    return 'error'
   }
 }
 

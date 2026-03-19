@@ -91,9 +91,10 @@ export async function transitionConversation(
   const nextState = getNextState(conv.state, event)
 
   // 3. Update conversation state (optimistic lock: only if state hasn't changed)
+  // NOTE: Supabase .update() only populates `count` when { count: 'exact' } is passed
   const { error: updateError, count: updatedRows } = await supabase
     .from('conversations')
-    .update({ state: nextState })
+    .update({ state: nextState }, { count: 'exact' })
     .eq('id', conversationId)
     .eq('state', conv.state)
 
