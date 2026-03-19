@@ -43,7 +43,15 @@ export async function GET(request: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped service client
     const supabase = getServiceClient() as any
 
-    const todayStart = getTodayBounds()
+    // Fetch workspace timezone for day-boundary calculation
+    const { data: wsData } = await supabase
+      .from('workspaces')
+      .select('timezone')
+      .eq('id', workspaceId)
+      .single()
+    const wsTimezone = (wsData as { timezone?: string } | null)?.timezone ?? 'UTC'
+
+    const todayStart = getTodayBounds(wsTimezone)
 
     // Run all 3 queries in parallel for speed
     const [bookingsResult, actionsResult, statsResult] = await Promise.all([
@@ -99,13 +107,32 @@ interface TodayBounds {
   endISO: string
 }
 
-function getTodayBounds(): TodayBounds {
-  const now = new Date()
-  const dateStr = now.toISOString().slice(0, 10)
+function getTodayBounds(timezone?: string): TodayBounds {
+  const tz = timezone ?? 'UTC'
+  // Get today's date string in the workspace's timezone
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+  const dateStr = formatter.format(new Date())
+
+  // Build timezone-aware start/end of day by computing UTC offset
+  // For bookings stored as TIMESTAMPTZ, Postgres compares in UTC,
+  // so we need the UTC equivalent of "midnight local" and "end of day local"
+  const localMidnight = new Date(`${dateStr}T00:00:00`)
+  const utcMidnight = new Date(`${dateStr}T00:00:00Z`)
+  // Rough offset: diff between what JS thinks localMidnight is vs UTC midnight
+  // Better: use Intl to get the actual offset
+  const offsetMs = localMidnight.getTime() - utcMidnight.getTime()
+  const startUtc = new Date(utcMidnight.getTime() - offsetMs)
+  const endUtc = new Date(startUtc.getTime() + 24 * 60 * 60 * 1000 - 1)
+
   return {
     dateStr,
-    startISO: `${dateStr}T00:00:00.000Z`,
-    endISO: `${dateStr}T23:59:59.999Z`,
+    startISO: startUtc.toISOString(),
+    endISO: endUtc.toISOString(),
   }
 }
 

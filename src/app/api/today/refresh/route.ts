@@ -92,7 +92,9 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Invoke Edge Function ──────────────────────────────
-    const efUrl = `${SUPABASE_URL}/functions/v1/cron-morning-coordinator`
+    // Use cron-morning-scan directly (per-workspace), NOT the coordinator
+    // which fans out to ALL workspaces
+    const efUrl = `${SUPABASE_URL}/functions/v1/cron-morning-scan`
 
     const efResponse = await fetch(efUrl, {
       method: 'POST',

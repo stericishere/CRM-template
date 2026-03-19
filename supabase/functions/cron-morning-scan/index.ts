@@ -992,11 +992,11 @@ async function scoreAndRankProposedActions(
         .maybeSingle()
 
       if (nextBooking) {
-        hasUpcomingBooking = true
         const msAway = new Date(nextBooking.start_time).getTime() - Date.now()
         bookingDaysAway = Math.max(0, Math.floor(msAway / (24 * 60 * 60 * 1000)))
 
-        // Override to unconfirmed scenario if confirmation_status is pending
+        // Only flag as upcoming booking for urgency if confirmation is still pending
+        // Confirmed bookings shouldn't inflate urgency for unrelated actions
         if (nextBooking.confirmation_status === 'pending') {
           hasUpcomingBooking = true
         }
@@ -1058,8 +1058,7 @@ async function scoreAndRankProposedActions(
       .from('proposed_actions')
       .update({
         urgency_score: item.score,
-        urgency_rank: rank,
-        urgency_reason: item.reason,
+        rank,
       })
       .eq('id', item.id)
 

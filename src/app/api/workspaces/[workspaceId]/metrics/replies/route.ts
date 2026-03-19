@@ -47,11 +47,14 @@ export async function GET(
 
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
 
+    // Only track replies for messages that were actually sent
+    // (not discarded/regenerated drafts)
     const { data, error } = await supabase
       .from('draft_edit_signals')
       .select('client_replied, client_reply_latency_minutes, created_at')
       .eq('workspace_id', workspaceId)
       .gte('created_at', cutoff)
+      .in('staff_action', ['sent_as_is', 'edited_and_sent'])
 
     if (error) {
       console.error('[GET /metrics/replies] Query failed:', error.message)
