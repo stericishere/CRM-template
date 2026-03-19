@@ -23,6 +23,7 @@ import { callLLM, FLASH_MODEL } from '../_shared/llm-client.ts'
 import { buildToneExtractionPrompt } from '../_shared/prompts/tone-extraction.ts'
 import { buildToneAdjustmentPrompt } from '../_shared/prompts/tone-adjustment.ts'
 import type { ToneProfile } from '../_shared/onboarding-types.ts'
+import { parseJsonFromLLM } from '../_shared/llm-json-parser.ts'
 
 serve(async (req) => {
   if (req.method !== 'POST') {
@@ -125,7 +126,7 @@ async function handleExtract(
   })
 
   const raw = result.message.content ?? ''
-  const toneProfile = parseJsonResponse<ToneProfile>(raw)
+  const toneProfile = validateToneProfile(parseJsonFromLLM<ToneProfile>(raw, 'onboarding-tone'))
 
   // Persist to workspace
   const { error: updateError } = await supabase
@@ -178,7 +179,7 @@ async function handleRefine(
   })
 
   const raw = result.message.content ?? ''
-  const toneProfile = parseJsonResponse<ToneProfile>(raw)
+  const toneProfile = parseJsonFromLLM<ToneProfile>(raw, 'onboarding-tone')
 
   // Persist updated tone profile
   const { error: updateError } = await supabase
@@ -202,21 +203,20 @@ async function handleRefine(
   )
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// parseJsonFromLLM imported from _shared/llm-json-parser.ts
 
-/**
- * Extracts JSON from an LLM response, stripping markdown fences if present.
- * Throws on invalid JSON so the caller returns a 500.
- */
-function parseJsonResponse<T>(raw: string): T {
-  // Strip markdown code fences (```json ... ``` or ``` ... ```)
-  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
-  const jsonStr = fenceMatch ? fenceMatch[1].trim() : raw.trim()
+const VALID_FORMALITY = new Set(['casual', 'balanced', 'formal'])
+const VALID_EMOJI = new Set(['none', 'minimal', 'moderate', 'frequent'])
 
-  try {
-    return JSON.parse(jsonStr) as T
-  } catch {
-    console.error('[onboarding-tone] Failed to parse LLM JSON:', jsonStr.slice(0, 500))
-    throw new Error('LLM returned invalid JSON — retry or refine the prompt')
-  }
+function validateToneProfile(p: unknown): ToneProfile {
+  if (!p || typeof p !== 'object') throw new Error('ToneProfile: not an object')
+  const t = p as Record<string, unknown>
+  if (typeof t.voice !== 'string') throw new Error('ToneProfile: missing voice')
+  if (!VALID_FORMALITY.has(t.formality as string))
+    throw new Error(`ToneProfile: invalid formality "${t.formality}"`)
+  if (!VALID_EMOJI.has(t.emoji_usage as string))
+    throw new Error(`ToneProfile: invalid emoji_usage "${t.emoji_usage}"`)
+  if (typeof t.greeting_style !== 'string') throw new Error('ToneProfile: missing greeting_style')
+  if (typeof t.sign_off_style !== 'string') throw new Error('ToneProfile: missing sign_off_style')
+  return t as unknown as ToneProfile
 }

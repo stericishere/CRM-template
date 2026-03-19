@@ -23,6 +23,7 @@ import { callLLM, PRO_MODEL, FLASH_MODEL } from '../_shared/llm-client.ts'
 import { buildDeepResearchSopPrompt } from '../_shared/prompts/deep-research-sop.ts'
 import { buildSopRefinementPrompt } from '../_shared/prompts/sop-refinement.ts'
 import type { VerticalConfig } from '../_shared/onboarding-types.ts'
+import { parseJsonFromLLM } from '../_shared/llm-json-parser.ts'
 
 serve(async (req) => {
   if (req.method !== 'POST') {
@@ -96,7 +97,7 @@ async function handleGenerate(
   })
 
   const raw = result.message.content ?? ''
-  const verticalConfig = parseJsonResponse<VerticalConfig>(raw)
+  const verticalConfig = validateVerticalConfig(parseJsonResponse<VerticalConfig>(raw))
 
   // Persist to workspace
   const { error: updateError } = await supabase
@@ -149,7 +150,7 @@ async function handleRefine(
   })
 
   const raw = result.message.content ?? ''
-  const verticalConfig = parseJsonResponse<VerticalConfig>(raw)
+  const verticalConfig = parseJsonFromLLM<VerticalConfig>(raw, 'onboarding-sops')
 
   // Persist updated config
   const { error: updateError } = await supabase
@@ -173,21 +174,18 @@ async function handleRefine(
   )
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// parseJsonFromLLM imported from _shared/llm-json-parser.ts
 
-/**
- * Extracts JSON from an LLM response, stripping markdown fences if present.
- * Throws on invalid JSON so the caller returns a 500.
- */
-function parseJsonResponse<T>(raw: string): T {
-  // Strip markdown code fences (```json ... ``` or ``` ... ```)
-  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
-  const jsonStr = fenceMatch ? fenceMatch[1].trim() : raw.trim()
-
-  try {
-    return JSON.parse(jsonStr) as T
-  } catch {
-    console.error('[onboarding-sops] Failed to parse LLM JSON:', jsonStr.slice(0, 500))
-    throw new Error('LLM returned invalid JSON — retry or refine the prompt')
+function validateVerticalConfig(v: unknown): VerticalConfig {
+  if (!v || typeof v !== 'object') throw new Error('VerticalConfig: not an object')
+  const c = v as Record<string, unknown>
+  if (!Array.isArray(c.sop_rules)) throw new Error('VerticalConfig: sop_rules must be array')
+  if (!Array.isArray(c.appointment_types)) throw new Error('VerticalConfig: appointment_types must be array')
+  if (!Array.isArray(c.custom_fields)) throw new Error('VerticalConfig: custom_fields must be array')
+  for (const appt of c.appointment_types) {
+    const a = appt as Record<string, unknown>
+    if (typeof a.name !== 'string' || typeof a.duration_minutes !== 'number')
+      throw new Error('VerticalConfig: appointment_type missing name or duration_minutes')
   }
+  return v as VerticalConfig
 }

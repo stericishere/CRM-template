@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { e164Schema } from '@/lib/clients/types'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -15,10 +16,6 @@ export type OnboardingStep = (typeof ONBOARDING_STEPS)[number]
 
 export const ONBOARDING_STATUSES = ['pending', 'in_progress', 'complete'] as const
 export type OnboardingStatus = (typeof ONBOARDING_STATUSES)[number]
-
-// ─── Reusable fragments ─────────────────────────────────────────────────────
-
-const e164Schema = z.string().regex(/^\+[1-9]\d{7,14}$/, 'Must be E.164 format')
 
 // ─── Step schemas ────────────────────────────────────────────────────────────
 
