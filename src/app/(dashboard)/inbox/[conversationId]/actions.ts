@@ -1,8 +1,53 @@
 'use server'
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { getServiceClient } from '@/lib/supabase/service'
 import { recordDraftEditSignal, determineStaffAction } from '@/lib/learning/record-signal'
+
+// ─── Shared Helper ──────────────────────────────────────────────────────────
+
+interface DraftWithClient {
+  draft: {
+    id: string
+    content: string
+    intent_classified: string | null
+    scenario_type: string | null
+    conversation_id: string
+    workspace_id: string
+  }
+  clientId: string
+  clientPhone: string | null
+}
+
+async function fetchDraftWithClient(
+  supabase: SupabaseClient,
+  draftId: string
+): Promise<{ data: DraftWithClient | null; error?: string }> {
+  const { data: draft, error: draftError } = await supabase
+    .from('drafts')
+    .select('id, content, intent_classified, scenario_type, conversation_id, workspace_id')
+    .eq('id', draftId)
+    .single()
+
+  if (draftError || !draft) return { data: null, error: 'Draft not found' }
+
+  const { data: conv } = await supabase
+    .from('conversations')
+    .select('client_id, clients(phone)')
+    .eq('id', draft.conversation_id)
+    .single()
+
+  if (!conv) return { data: null, error: 'Conversation not found' }
+
+  return {
+    data: {
+      draft,
+      clientId: conv.client_id,
+      clientPhone: (conv.clients as unknown as { phone: string })?.phone ?? null,
+    },
+  }
+}
 
 // ─── Send Draft ─────────────────────────────────────────────────────────────
 
@@ -14,30 +59,14 @@ export async function sendDraftReply(
   const supabase = await createClient()
   const serviceClient = getServiceClient()
 
-  // 1. Fetch draft record
-  const { data: draft, error: draftError } = await supabase
-    .from('drafts')
-    .select('id, content, intent_classified, scenario_type, conversation_id, workspace_id')
-    .eq('id', draftId)
-    .single()
+  const { data, error } = await fetchDraftWithClient(supabase, draftId)
+  if (!data) return { success: false, error: error ?? 'Draft not found' }
 
-  if (draftError || !draft) {
-    return { success: false, error: 'Draft not found' }
-  }
-
+  const { draft, clientId, clientPhone } = data
   const workspaceId = draft.workspace_id
   const conversationId = draft.conversation_id
 
-  const { data: conv } = await supabase
-    .from('conversations')
-    .select('client_id')
-    .eq('id', conversationId)
-    .single()
-
-  if (!conv) return { success: false, error: 'Conversation not found' }
-  const clientId = conv.client_id
-
-  // 2. INSERT outbound message
+  // 1. INSERT outbound message
   const { error: msgError } = await supabase
     .from('messages')
     .insert({
@@ -52,7 +81,7 @@ export async function sendDraftReply(
 
   if (msgError) return { success: false, error: msgError.message }
 
-  // 3. Record learning signal (non-blocking, fire-and-forget)
+  // 2. Record learning signal (non-blocking, fire-and-forget)
   const staffAction = determineStaffAction(draft.content, finalText)
   void recordDraftEditSignal(serviceClient, {
     workspaceId,
@@ -65,7 +94,7 @@ export async function sendDraftReply(
     scenarioType: draft.scenario_type ?? 'unclassified',
   }).catch(() => {})
 
-  // 4. UPDATE draft status
+  // 3. UPDATE draft status
   await supabase
     .from('drafts')
     .update({
@@ -76,33 +105,25 @@ export async function sendDraftReply(
     })
     .eq('id', draftId)
 
-  // 5. POST to Baileys server: /send
+  // 4. POST to Baileys server: /send
   try {
     const baileysUrl = process.env.BAILEYS_SERVER_URL
-    if (baileysUrl) {
-      const { data: client } = await supabase
-        .from('clients')
-        .select('phone')
-        .eq('id', clientId)
-        .single()
-
-      if (client) {
-        await fetch(`${baileysUrl}/send`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            workspaceId,
-            to: client.phone,
-            content: finalText.trim(),
-          }),
-        })
-      }
+    if (baileysUrl && clientPhone) {
+      await fetch(`${baileysUrl}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId,
+          to: clientPhone,
+          content: finalText.trim(),
+        }),
+      })
     }
   } catch (err) {
     console.error('[send] Failed to dispatch via Baileys:', err)
   }
 
-  // 6. Update conversation state
+  // 5. Update conversation state
   await supabase
     .from('conversations')
     .update({ state: 'awaiting_client_reply' })
@@ -120,25 +141,14 @@ export async function discardDraft(
   const supabase = await createClient()
   const serviceClient = getServiceClient()
 
-  const { data: draft } = await supabase
-    .from('drafts')
-    .select('id, content, intent_classified, scenario_type, conversation_id, workspace_id')
-    .eq('id', draftId)
-    .single()
+  const { data, error } = await fetchDraftWithClient(supabase, draftId)
+  if (!data) return { success: false, error: error ?? 'Draft not found' }
 
-  if (!draft) return { success: false, error: 'Draft not found' }
-
-  const { data: conv } = await supabase
-    .from('conversations')
-    .select('client_id')
-    .eq('id', draft.conversation_id)
-    .single()
-
-  if (!conv) return { success: false, error: 'Conversation not found' }
+  const { draft, clientId } = data
 
   void recordDraftEditSignal(serviceClient, {
     workspaceId: draft.workspace_id,
-    clientId: conv.client_id,
+    clientId,
     draftId,
     staffAction: 'discarded',
     originalDraft: draft.content,
@@ -168,26 +178,15 @@ export async function regenerateDraft(
   const supabase = await createClient()
   const serviceClient = getServiceClient()
 
-  const { data: draft } = await supabase
-    .from('drafts')
-    .select('id, content, intent_classified, scenario_type, conversation_id, workspace_id')
-    .eq('id', draftId)
-    .single()
+  const { data, error } = await fetchDraftWithClient(supabase, draftId)
+  if (!data) return { success: false, error: error ?? 'Draft not found' }
 
-  if (!draft) return { success: false, error: 'Draft not found' }
-
-  const { data: conv } = await supabase
-    .from('conversations')
-    .select('client_id')
-    .eq('id', draft.conversation_id)
-    .single()
-
-  if (!conv) return { success: false, error: 'Conversation not found' }
+  const { draft, clientId } = data
 
   // 1. Signal for superseded draft
   void recordDraftEditSignal(serviceClient, {
     workspaceId: draft.workspace_id,
-    clientId: conv.client_id,
+    clientId,
     draftId,
     staffAction: 'regenerated',
     originalDraft: draft.content,
@@ -223,7 +222,7 @@ export async function regenerateDraft(
       msg: {
         message_id: latestMsg.id,
         workspace_id: draft.workspace_id,
-        client_id: conv.client_id,
+        client_id: clientId,
         conversation_id: draft.conversation_id,
         phone: '',
         content: latestMsg.content,

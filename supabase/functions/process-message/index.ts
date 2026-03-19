@@ -247,6 +247,7 @@ serve(async (_req) => {
       const workerResult = await invokeClientWorker(context, toolRegistry, {
         model: PRO_MODEL,
         maxTokens: 1024,
+        conversationId: payload.conversation_id,
       })
 
       const latencyMs = Date.now() - pipelineStart

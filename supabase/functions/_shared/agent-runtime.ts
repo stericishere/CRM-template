@@ -39,8 +39,8 @@ const MAX_TOOL_LOOPS = 5
 // Options passed to the Client Worker invocation
 export interface ClientWorkerOptions {
   model?: string
-  calendarConnected?: boolean
   maxTokens?: number
+  conversationId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -61,22 +61,19 @@ export async function invokeClientWorker(
   options: ClientWorkerOptions = {}
 ): Promise<ClientWorkerResult> {
   const model = options.model ?? PRO_MODEL
-  const calendarConnected = context.calendarConnected
   const maxTokens = options.maxTokens ?? 1024
 
   // Parse session identifiers from the session key (format: workspace:{id}:client:{id})
   const sessionKey = context.sessionKey
   const [, workspaceId, , clientId] = sessionKey.split(':')
-
-  // conversationId is not in ReadOnlyContext — derive from messages or leave empty
-  // It is injected via tool executor but must be passed through the session object
-  const conversationId = ''
+  const conversationId = options.conversationId ?? ''
 
   const session = { workspaceId, clientId, conversationId }
 
   // Build system prompt from GlobalContext (workspace-level, cacheable)
   const systemPrompt = composeSystemPrompt(context)
 
+  const calendarConnected = context.tools.calendarConnected
   const tools = buildToolDefinitions(toolRegistry, { calendarConnected })
 
   // Build the initial conversation messages

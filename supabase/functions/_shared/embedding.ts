@@ -1,38 +1,21 @@
 // supabase/functions/_shared/embedding.ts
 // Embeddings via OpenRouter (EMBEDDING_MODEL from env)
-// Used for knowledge base indexing and query-time search
+// Reuses the shared LLM client — same OpenRouter connection
 
-import OpenAI from 'https://esm.sh/openai@4'
+import { getLLMClient, EMBEDDING_MODEL } from './llm-client.ts'
 
-const EMBEDDING_MODEL = Deno.env.get('EMBEDDING_MODEL') ?? 'text-embedding-3-small'
-
-let _client: OpenAI | null = null
-
-function getEmbeddingClient(): OpenAI {
-  if (_client) return _client
-
-  const apiKey = Deno.env.get('OPENROUTER_API_KEY')
-  if (!apiKey) {
-    throw new Error('Missing OPENROUTER_API_KEY environment variable')
-  }
-
-  _client = new OpenAI({
-    apiKey,
-    baseURL: 'https://openrouter.ai/api/v1',
-    defaultHeaders: {
-      'HTTP-Referer': Deno.env.get('SITE_URL') ?? 'https://crm-template.vercel.app',
-      'X-Title': 'CRM Template',
-    },
-  })
-  return _client
-}
+// Simple per-request cache to avoid duplicate embedding calls for the same text
+const _cache = new Map<string, number[]>()
 
 /**
  * Generate an embedding for a text string.
- * Dimension depends on the model configured via EMBEDDING_MODEL env var.
+ * Caches by input text within the request lifetime.
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
-  const client = getEmbeddingClient()
+  const cached = _cache.get(text)
+  if (cached) return cached
+
+  const client = getLLMClient()
 
   const response = await client.embeddings.create({
     model: EMBEDDING_MODEL,
@@ -41,6 +24,8 @@ export async function generateEmbedding(text: string): Promise<number[]> {
 
   const embedding = response.data[0]?.embedding
   if (!embedding) throw new Error('Embedding API returned no data')
+
+  _cache.set(text, embedding)
   return embedding
 }
 
@@ -50,14 +35,19 @@ export async function generateEmbedding(text: string): Promise<number[]> {
 export async function generateEmbeddings(
   texts: string[]
 ): Promise<number[][]> {
-  const client = getEmbeddingClient()
+  const client = getLLMClient()
 
   const response = await client.embeddings.create({
     model: EMBEDDING_MODEL,
     input: texts.map(t => t.slice(0, 8000)),
   })
 
-  return response.data
+  const results = response.data
     .sort((a, b) => a.index - b.index)
     .map(d => d.embedding)
+
+  // Cache individual results
+  texts.forEach((t, i) => _cache.set(t, results[i]))
+
+  return results
 }
