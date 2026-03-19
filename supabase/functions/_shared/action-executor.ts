@@ -101,7 +101,6 @@ async function executeBookingCreate(
     appointment_type: appointmentType,
     start_time: startDate.toISOString(),
     end_time: endDate.toISOString(),
-    duration_minutes: durationMinutes,
     status: 'confirmed',
     confirmation_status: 'confirmed',
     notes,
