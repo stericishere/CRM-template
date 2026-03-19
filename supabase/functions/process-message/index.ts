@@ -52,6 +52,7 @@ import { evaluateApprovalPolicy } from '../_shared/approval-policy.ts'
 import { saveDraft, logLLMUsage } from '../_shared/draft-persistence.ts'
 import { estimateCost, PRO_MODEL } from '../_shared/llm-client.ts'
 import { bestEffortCancelTimer } from '../_shared/timer-helpers.ts'
+import { processMedia } from '../_shared/media-processor.ts'
 
 // VT raised to 120s to give the LLM pipeline time to complete before
 // the message becomes visible again for retry.
@@ -239,6 +240,68 @@ serve(async (_req) => {
     }
 
     // -------------------------------------------------------------------------
+    // 5b. Media pre-processing — transcribe audio, extract metadata
+    //     Runs BEFORE the AI pipeline so transcription is available for context.
+    //
+    //  ┌───────────────┐    ┌────────────────┐    ┌───────────────┐
+    //  │ has media_type?│───>│ fetch media_url │───>│ processMedia  │
+    //  │               │ no │ from messages   │    │ (whisper/meta)│
+    //  │  skip         │    └────────────────┘    └──────┬────────┘
+    //  └───────────────┘                                 │
+    //                                                    v
+    //                                           ┌────────────────┐
+    //                                           │ update message │
+    //                                           │ row with result│
+    //                                           └────────────────┘
+    // -------------------------------------------------------------------------
+    let mediaTranscription: string | null = null
+
+    if (payload.media_type) {
+      try {
+        // Fetch media_url from the messages table (not in queue payload)
+        const { data: msgRow } = await supabase
+          .from('messages')
+          .select('media_url')
+          .eq('id', payload.message_id)
+          .single()
+
+        const mediaResult = await processMedia(
+          supabase,
+          payload.message_id,
+          payload.media_type,
+          msgRow?.media_url ?? null
+        )
+
+        mediaTranscription = mediaResult.transcription
+
+        // Persist transcription + metadata back to the message row
+        const updateFields: Record<string, unknown> = {
+          transcription_status: mediaResult.transcription_status,
+        }
+        if (mediaResult.transcription) {
+          updateFields.media_transcription = mediaResult.transcription
+        }
+        if (mediaResult.media_metadata) {
+          updateFields.media_metadata = mediaResult.media_metadata
+        }
+
+        await supabase
+          .from('messages')
+          .update(updateFields)
+          .eq('id', payload.message_id)
+
+        console.log('[media] Message updated:', {
+          messageId: payload.message_id,
+          transcriptionStatus: mediaResult.transcription_status,
+          hasTranscription: !!mediaResult.transcription,
+        })
+      } catch (mediaErr) {
+        // Media processing failure is non-fatal — continue with text-only context
+        console.error('[media] Processing failed (non-blocking):', mediaErr)
+      }
+    }
+
+    // -------------------------------------------------------------------------
     // 6–12. AI Pipeline — wrapped in try/catch so VT expiry handles retries
     // -------------------------------------------------------------------------
     try {
@@ -248,7 +311,7 @@ serve(async (_req) => {
       const inboundMessage: InboundMessage = {
         content: payload.content,
         mediaType: payload.media_type,
-        mediaTranscription: null, // populated by media-transcription function (future)
+        mediaTranscription,
         timestamp: new Date().toISOString(),
       }
 
