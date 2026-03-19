@@ -657,7 +657,7 @@ async function runScan4_InactivityDetection(
             payload: {
               source: 'morning_scan',
               scan_type: 'inactivity_detection',
-              lifecycle_transition: { from: 'active', to: 'inactive' },
+              lifecycle_transition: { from: client.lifecycle_status ?? 'open', to: 'inactive' },
               inactivity_days: config.inactivity_days,
             },
             status: 'approved', // auto tier — already executed
@@ -857,7 +857,7 @@ async function runScan5_DailyJournal(
 
     const totalSignals = Object.values(signalCounts).reduce((s, v) => s + v, 0)
     const acceptanceRate = totalSignals > 0
-      ? (signalCounts.sent_as_is / totalSignals) * 100
+      ? ((signalCounts.sent_as_is + signalCounts.edited_and_sent) / totalSignals) * 100
       : 0
 
     const learningSnapshot: LearningSnapshot = {

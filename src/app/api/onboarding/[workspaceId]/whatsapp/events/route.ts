@@ -51,7 +51,7 @@ export async function GET(
             const { done, value } = await reader.read()
             if (done) break
             // Forward raw SSE data from Baileys
-            controller.enqueue(value ?? encoder.encode(decoder.decode(value)))
+            controller.enqueue(value)
           }
         } catch (readErr) {
           // Stream interrupted — normal during disconnect
