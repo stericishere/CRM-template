@@ -67,7 +67,18 @@ export async function sendDraftReply(
   const workspaceId = draft.workspace_id
   const conversationId = draft.conversation_id
 
-  // 1. INSERT outbound message
+  // 1. Fail fast if delivery is impossible — before inserting outbound message
+  const baileysUrl = process.env.BAILEYS_SERVER_URL
+  const baileysSecret = process.env.BAILEYS_API_SECRET
+
+  if (!baileysUrl) {
+    return { success: false, error: 'WhatsApp server not configured (BAILEYS_SERVER_URL missing)' }
+  }
+  if (!clientPhone) {
+    return { success: false, error: 'Client has no phone number — cannot deliver via WhatsApp' }
+  }
+
+  // 2. INSERT outbound message with pending delivery status
   const { error: msgError } = await supabase
     .from('messages')
     .insert({
@@ -76,13 +87,13 @@ export async function sendDraftReply(
       direction: 'outbound',
       content: finalText.trim(),
       sender_type: 'staff',
-      delivery_status: 'sent',
+      delivery_status: 'pending',
       draft_id: draftId,
     })
 
   if (msgError) return { success: false, error: msgError.message }
 
-  // 2. Record learning signal (non-blocking, fire-and-forget)
+  // 3. Record learning signal (non-blocking, fire-and-forget)
   const staffAction = determineStaffAction(draft.content, finalText)
   void recordDraftEditSignal(serviceClient, {
     workspaceId,
@@ -95,7 +106,7 @@ export async function sendDraftReply(
     scenarioType: draft.scenario_type ?? 'unclassified',
   }).catch(() => {})
 
-  // 3. UPDATE draft status
+  // 4. UPDATE draft status
   await supabase
     .from('drafts')
     .update({
@@ -106,42 +117,24 @@ export async function sendDraftReply(
     })
     .eq('id', draftId)
 
-  // 4. POST to Baileys server: /send (authenticated)
-  // If dispatch fails, return error — staff must know the message wasn't sent.
-  // The outbound message row exists locally but delivery_status should reflect failure.
-  const baileysUrl = process.env.BAILEYS_SERVER_URL
-  const baileysSecret = process.env.BAILEYS_API_SECRET
+  // 5. POST to Baileys server: /send (authenticated)
+  try {
+    const resp = await fetch(`${baileysUrl}/send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(baileysSecret ? { 'x-api-secret': baileysSecret } : {}),
+      },
+      body: JSON.stringify({
+        workspaceId,
+        to: clientPhone,
+        content: finalText.trim(),
+      }),
+    })
 
-  if (baileysUrl && clientPhone) {
-    try {
-      const resp = await fetch(`${baileysUrl}/send`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(baileysSecret ? { 'x-api-secret': baileysSecret } : {}),
-        },
-        body: JSON.stringify({
-          workspaceId,
-          to: clientPhone,
-          content: finalText.trim(),
-        }),
-      })
-
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => '')
-        console.error('[send] Baileys dispatch failed:', resp.status, body)
-
-        // Mark message as failed so staff can see it wasn't delivered
-        await supabase
-          .from('messages')
-          .update({ delivery_status: 'failed' })
-          .eq('draft_id', draftId)
-          .eq('direction', 'outbound')
-
-        return { success: false, error: `WhatsApp dispatch failed (${resp.status})` }
-      }
-    } catch (err) {
-      console.error('[send] Failed to dispatch via Baileys:', err)
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '')
+      console.error('[send] Baileys dispatch failed:', resp.status, body)
 
       await supabase
         .from('messages')
@@ -149,11 +142,28 @@ export async function sendDraftReply(
         .eq('draft_id', draftId)
         .eq('direction', 'outbound')
 
-      return { success: false, error: 'WhatsApp dispatch failed (network error)' }
+      return { success: false, error: `WhatsApp dispatch failed (${resp.status})` }
     }
+  } catch (err) {
+    console.error('[send] Failed to dispatch via Baileys:', err)
+
+    await supabase
+      .from('messages')
+      .update({ delivery_status: 'failed' })
+      .eq('draft_id', draftId)
+      .eq('direction', 'outbound')
+
+    return { success: false, error: 'WhatsApp dispatch failed (network error)' }
   }
 
-  // 5. Update conversation state (only on successful send)
+  // Mark as sent after successful dispatch
+  await supabase
+    .from('messages')
+    .update({ delivery_status: 'sent' })
+    .eq('draft_id', draftId)
+    .eq('direction', 'outbound')
+
+  // 6. Update conversation state (only on successful send)
   await supabase
     .from('conversations')
     .update({ state: 'awaiting_client_reply' })

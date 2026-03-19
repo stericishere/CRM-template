@@ -1,6 +1,7 @@
 import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
+  type Contact,
   type WAMessage,
   type WASocket,
 } from '@whiskeysockets/baileys'
@@ -152,6 +153,12 @@ export async function connectWorkspace(
         }
       }
     })
+
+    // Sync contact names — store display name only, never append the phone number.
+    // The phone is already stored separately on the clients row.
+    sock.ev.on('contacts.upsert', (contacts: Contact[]) => {
+      void syncContactNames(workspaceId, contacts)
+    })
   }
 
   await startSocket()
@@ -192,4 +199,42 @@ export function getAllStatuses(): Record<string, ConnectionStatus> {
     result[id] = ws.status
   }
   return result
+}
+
+/**
+ * Sync WhatsApp contact display names to CRM clients.
+ * Stores only the display name — never appends the phone number,
+ * since it's already stored in clients.phone.
+ *
+ * Only updates clients that currently have no full_name set (null/empty)
+ * to avoid overwriting cleaner CRM-managed names with sync artifacts.
+ */
+async function syncContactNames(
+  workspaceId: string,
+  contacts: Contact[]
+): Promise<void> {
+  for (const contact of contacts) {
+    if (!contact.id || !contact.notify && !contact.name) continue
+
+    // Extract clean name — prefer notify (push name) over name (address book)
+    const displayName = (contact.notify || contact.name || '').trim()
+    if (!displayName) continue
+
+    // Normalize JID to E.164 phone
+    const number = contact.id.split('@')[0]
+    if (!number) continue
+    const phone = `+${number}`
+
+    try {
+      // Only update clients that have no CRM-managed name yet
+      await supabase
+        .from('clients')
+        .update({ full_name: displayName })
+        .eq('workspace_id', workspaceId)
+        .eq('phone', phone)
+        .or('full_name.is.null,full_name.eq.')
+    } catch (err) {
+      logger.warn({ workspaceId, phone, error: err }, 'Failed to sync contact name')
+    }
+  }
 }

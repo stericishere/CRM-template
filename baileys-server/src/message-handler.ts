@@ -112,16 +112,32 @@ export async function handleInboundMessage(
     }
 
     // Step 2: Find or create client by (workspace_id, phone)
-    const { data: client, error: clientError } = await supabase
+    // Use ignoreDuplicates: true so existing clients are NOT overwritten
+    // (prevents resurrecting soft-deleted clients during history replay)
+    const { error: upsertError } = await supabase
       .from('clients')
       .upsert(
         { workspace_id: workspaceId, phone, lifecycle_status: 'open' },
-        { onConflict: 'workspace_id,phone', ignoreDuplicates: false }
+        { onConflict: 'workspace_id,phone', ignoreDuplicates: true }
       )
-      .select('id, lifecycle_status')
+
+    if (upsertError) throw upsertError
+
+    // Now select the client to check current state
+    const { data: client, error: selectError } = await supabase
+      .from('clients')
+      .select('id, lifecycle_status, deleted_at')
+      .eq('workspace_id', workspaceId)
+      .eq('phone', phone)
       .single()
 
-    if (clientError) throw clientError
+    if (selectError) throw selectError
+
+    // Skip processing for soft-deleted clients — don't resurrect archived records
+    if (client.deleted_at) {
+      logger.debug({ workspaceId, phone }, 'Client is soft-deleted, skipping message')
+      return
+    }
 
     // Reactivate inactive client, or just update last_contacted_at
     const clientUpdate =

@@ -20,7 +20,7 @@ const POLLING_INTERVAL_MS = 5_000
  * scoped to a single workspace. Falls back to polling on disconnect.
  *
  * ┌──────────┐  INSERT  ┌────────────┐
- * │ messages │─────────▶│ onNewMsg   │
+ * │ messages │─────────▶│ onNewMsg   │  (inbound only)
  * └──────────┘          └────────────┘
  * ┌──────────┐  INSERT  ┌────────────┐
  * │ drafts   │─────────▶│ onDraftRdy │
@@ -28,7 +28,7 @@ const POLLING_INTERVAL_MS = 5_000
  *       │ disconnect > 10s
  *       ▼
  * ┌─────────────────┐
- * │ polling fallback │
+ * │ polling fallback │  (messages + drafts, deduped by ID)
  * └─────────────────┘
  */
 export function useInboxRealtime({
@@ -46,6 +46,10 @@ export function useInboxRealtime({
   onNewMessageRef.current = onNewMessage
   const onDraftReadyRef = useRef(onDraftReady)
   onDraftReadyRef.current = onDraftReady
+
+  // Track last-polled IDs to prevent replaying the same record
+  const lastPolledMsgIdRef = useRef<string | null>(null)
+  const lastPolledDraftIdRef = useRef<string | null>(null)
 
   const clearPolling = useCallback(() => {
     if (pollingRef.current) {
@@ -65,11 +69,9 @@ export function useInboxRealtime({
     if (pollingRef.current) return // already polling
 
     pollingRef.current = setInterval(() => {
-      // Polling fetches are handled by the consumer via the
-      // onNewMessage / onDraftReady callbacks — here we trigger
-      // a lightweight fetch to check for new records.
       const supabase = createClient()
 
+      // Poll for new inbound messages
       supabase
         .from('messages')
         .select('*')
@@ -80,7 +82,28 @@ export function useInboxRealtime({
         .limit(1)
         .then(({ data }) => {
           if (data && data.length > 0) {
-            onNewMessageRef.current?.(data[0] as Record<string, unknown>)
+            const msg = data[0] as Record<string, unknown>
+            if (msg.id !== lastPolledMsgIdRef.current) {
+              lastPolledMsgIdRef.current = msg.id as string
+              onNewMessageRef.current?.(msg)
+            }
+          }
+        })
+
+      // Poll for new drafts
+      supabase
+        .from('drafts')
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .then(({ data }) => {
+          if (data && data.length > 0) {
+            const draft = data[0] as Record<string, unknown>
+            if (draft.id !== lastPolledDraftIdRef.current) {
+              lastPolledDraftIdRef.current = draft.id as string
+              onDraftReadyRef.current?.(draft)
+            }
           }
         })
     }, POLLING_INTERVAL_MS)
@@ -100,7 +123,10 @@ export function useInboxRealtime({
           filter: `workspace_id=eq.${workspaceId}`,
         },
         (payload) => {
-          onNewMessageRef.current?.(payload.new as Record<string, unknown>)
+          // Filter out outbound messages — only notify for inbound
+          const record = payload.new as Record<string, unknown>
+          if (record.direction === 'outbound') return
+          onNewMessageRef.current?.(record)
         }
       )
       .on(

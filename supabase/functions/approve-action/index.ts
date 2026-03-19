@@ -8,13 +8,9 @@
 //         │
 //         ├─ validate inputs (method, required fields, decision enum)
 //         │
-//         ├─ fetch proposed_actions row
-//         │         └─ 404 if not found
-//         │
-//         ├─ guard: status must be 'pending'
-//         │         └─ 409 if already resolved
-//         │
-//         ├─ UPDATE proposed_actions SET status=decision, reviewed_at, reviewed_by
+//         ├─ atomic claim: UPDATE proposed_actions SET reviewed_by, reviewed_at
+//         │         WHERE status='pending' AND reviewed_by IS NULL
+//         │         └─ 409 if already claimed or resolved
 //         │
 //         ├─ if approved ──► executeApprovedAction(supabase, action)
 //         │                        └─ execution failure is logged but does NOT revert approval
@@ -50,37 +46,34 @@ serve(async (req) => {
 
     const supabase = getSupabaseClient()
 
-    // 1. Fetch the proposed action
-    const { data: action, error: fetchError } = await supabase
+    // 1. Atomically claim the action row via UPDATE WHERE status='pending'.
+    //    This prevents two concurrent approvals from both executing side effects.
+    const { data: action, error: claimError } = await supabase
       .from('proposed_actions')
-      .select('*')
+      .update({
+        reviewed_by: staff_id,
+        reviewed_at: new Date().toISOString(),
+      })
       .eq('id', action_id)
+      .eq('status', 'pending')
+      .is('reviewed_by', null)
+      .select('*')
       .single()
 
-    if (fetchError || !action) {
+    if (claimError || !action) {
+      // PGRST116 = no rows matched — either not found or already resolved/claimed
+      const is409 = claimError?.code === 'PGRST116'
       return new Response(
-        JSON.stringify({ error: 'Action not found' }),
-        { status: 404 }
+        JSON.stringify({ error: is409 ? 'Action not found or already resolved' : (claimError?.message ?? 'Claim failed') }),
+        { status: is409 ? 409 : 500 }
       )
     }
 
-    // 2. Check action is still pending
-    if (action.status !== 'pending') {
-      return new Response(
-        JSON.stringify({ error: `Action already ${action.status}` }),
-        { status: 409 }
-      )
-    }
-
-    // 3. If rejected, update status immediately and return
+    // 2. If rejected, finalize status and return
     if (decision === 'rejected') {
       const { error: updateError } = await supabase
         .from('proposed_actions')
-        .update({
-          status: 'rejected',
-          reviewed_at: new Date().toISOString(),
-          reviewed_by: staff_id,
-        })
+        .update({ status: 'rejected' })
         .eq('id', action_id)
 
       if (updateError) {
@@ -88,8 +81,8 @@ serve(async (req) => {
       }
     }
 
-    // 4. If approved, execute FIRST — only mark approved after success.
-    //    If execution fails, the action stays pending so staff can retry.
+    // 3. If approved, execute FIRST — only mark approved after success.
+    //    If execution fails, unclaim the row so staff can retry.
     let executionResult = null
     if (decision === 'approved') {
       executionResult = await executeApprovedAction(supabase, {
@@ -106,7 +99,13 @@ serve(async (req) => {
       })
 
       if (!executionResult.success) {
-        console.error('[approve-action] Execution failed, action stays pending:', executionResult.error)
+        console.error('[approve-action] Execution failed, unclaiming row:', executionResult.error)
+        // Unclaim so staff can retry
+        await supabase
+          .from('proposed_actions')
+          .update({ reviewed_by: null, reviewed_at: null })
+          .eq('id', action_id)
+
         return new Response(
           JSON.stringify({
             success: false,
@@ -120,16 +119,11 @@ serve(async (req) => {
       // Execution succeeded — now mark as approved
       const { error: updateError } = await supabase
         .from('proposed_actions')
-        .update({
-          status: 'approved',
-          reviewed_at: new Date().toISOString(),
-          reviewed_by: staff_id,
-        })
+        .update({ status: 'approved' })
         .eq('id', action_id)
 
       if (updateError) {
         // Execution succeeded but status update failed — log but don't fail
-        // The action was executed; worst case staff sees it as pending still
         console.error('[approve-action] Status update failed after execution:', updateError.message)
       }
     }

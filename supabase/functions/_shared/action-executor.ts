@@ -12,7 +12,7 @@
 //         ├─ booking_create      → bookings INSERT
 //         ├─ client_update       → clients UPDATE (scoped fields)
 //         ├─ followup_create     → follow_ups INSERT
-//         ├─ message_send        → (no-op — routed to Baileys via Next.js)
+//         ├─ message_send        → messages INSERT + Baileys /send dispatch
 //         ├─ note_create         → notes INSERT
 //         ├─ tag_attach          → clients UPDATE tags[] (read-modify-write)
 //         └─ last_contacted_update → clients UPDATE last_contacted_at
@@ -157,12 +157,106 @@ async function executeFollowUpCreate(
 }
 
 async function executeMessageSend(
-  _supabase: SupabaseClient,
-  _action: ProposedAction
+  supabase: SupabaseClient,
+  action: ProposedAction
 ): Promise<ExecutionResult> {
-  // Message sending is handled by the send Server Action in Next.js
-  // This is a placeholder — approve-action routes message_send to the Baileys server
-  return { success: true, metadata: { note: 'Message send routed to Baileys via Next.js Server Action' } }
+  // 1. Resolve message content from draft (if linked) or payload
+  let messageContent = action.payload.messageContent as string | undefined
+
+  if (!messageContent && action.draftId) {
+    const { data: draft } = await supabase
+      .from('drafts')
+      .select('content, edited_content')
+      .eq('id', action.draftId)
+      .single()
+    messageContent = (draft?.edited_content ?? draft?.content) as string | undefined
+  }
+
+  if (!messageContent) {
+    return { success: false, error: 'No message content found in draft or payload' }
+  }
+
+  // 2. Look up client phone
+  const { data: client } = await supabase
+    .from('clients')
+    .select('phone')
+    .eq('id', action.clientId)
+    .eq('workspace_id', action.workspaceId)
+    .single()
+
+  if (!client?.phone) {
+    return { success: false, error: 'Client has no phone number' }
+  }
+
+  // 3. Insert outbound message row with pending delivery status
+  const { data: outboundMsg, error: msgError } = await supabase
+    .from('messages')
+    .insert({
+      conversation_id: action.conversationId,
+      workspace_id: action.workspaceId,
+      direction: 'outbound',
+      content: messageContent,
+      sender_type: 'system',
+      delivery_status: 'pending',
+    })
+    .select('id')
+    .single()
+
+  if (msgError) return { success: false, error: msgError.message }
+  const msgId = outboundMsg.id as string
+
+  // 4. Dispatch to Baileys server
+  const baileysUrl = Deno.env.get('BAILEYS_SERVER_URL')
+  const baileysSecret = Deno.env.get('BAILEYS_API_SECRET')
+
+  if (!baileysUrl) {
+    await supabase.from('messages').update({ delivery_status: 'failed' }).eq('id', msgId)
+    return { success: false, error: 'BAILEYS_SERVER_URL not configured' }
+  }
+
+  try {
+    const resp = await fetch(`${baileysUrl}/send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(baileysSecret ? { 'x-api-secret': baileysSecret } : {}),
+      },
+      body: JSON.stringify({
+        workspaceId: action.workspaceId,
+        to: client.phone,
+        content: messageContent,
+      }),
+    })
+
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '')
+      console.error('[action_executor] Baileys dispatch failed:', resp.status, body)
+      await supabase.from('messages').update({ delivery_status: 'failed' }).eq('id', msgId)
+      return { success: false, error: `Baileys dispatch failed (${resp.status})` }
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    console.error('[action_executor] Baileys network error:', errMsg)
+    await supabase.from('messages').update({ delivery_status: 'failed' }).eq('id', msgId)
+    return { success: false, error: `Baileys dispatch failed: ${errMsg}` }
+  }
+
+  // 5. Mark as sent and update conversation
+  await supabase.from('messages').update({ delivery_status: 'sent' }).eq('id', msgId)
+
+  // Cancel stale_conversation timer — proactive message counts as engagement
+  if (action.conversationId) {
+    await bestEffortCancelTimer(
+      action.conversationId,
+      'stale_conversation',
+      'proactive_message_sent'
+    )
+  }
+
+  return {
+    success: true,
+    metadata: { to: client.phone, messageId: msgId },
+  }
 }
 
 async function executeNoteCreate(
