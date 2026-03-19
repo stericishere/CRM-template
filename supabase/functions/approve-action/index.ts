@@ -14,7 +14,7 @@
 //         ├─ guard: status must be 'pending'
 //         │         └─ 409 if already resolved
 //         │
-//         ├─ UPDATE proposed_actions SET status=decision, resolved_at, resolved_by
+//         ├─ UPDATE proposed_actions SET status=decision, reviewed_at, reviewed_by
 //         │
 //         ├─ if approved ──► executeApprovedAction(supabase, action)
 //         │                        └─ execution failure is logged but does NOT revert approval
@@ -77,8 +77,8 @@ serve(async (req) => {
         .from('proposed_actions')
         .update({
           status: 'rejected',
-          resolved_at: new Date().toISOString(),
-          resolved_by: staff_id,
+          reviewed_at: new Date().toISOString(),
+          reviewed_by: staff_id,
         })
         .eq('id', action_id)
 
@@ -121,8 +121,8 @@ serve(async (req) => {
         .from('proposed_actions')
         .update({
           status: 'approved',
-          resolved_at: new Date().toISOString(),
-          resolved_by: staff_id,
+          reviewed_at: new Date().toISOString(),
+          reviewed_by: staff_id,
         })
         .eq('id', action_id)
 
