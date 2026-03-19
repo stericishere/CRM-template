@@ -553,7 +553,7 @@ async function runScan4_InactivityDetection(
       .select('id')
       .eq('workspace_id', workspaceId)
       .is('deleted_at', null)
-      .neq('lifecycle_status', 'inactive')
+      .not('lifecycle_status', 'in', '("inactive","review_complete")')
       .lte('last_contacted_at', inactivityCutoff)
 
     if (queryError) {

@@ -257,13 +257,13 @@ async function handleDraftReviewNudge(
   try {
     const { data: conv } = await supabase
       .from('conversations')
-      .select('client_id, clients(display_name)')
+      .select('client_id, clients(full_name)')
       .eq('id', draft.conversation_id)
       .single()
 
     if (conv?.clients) {
-      const client = conv.clients as unknown as { display_name: string | null }
-      clientName = client.display_name ?? 'a client'
+      const client = conv.clients as unknown as { full_name: string | null }
+      clientName = client.full_name ?? 'a client'
     }
   } catch {
     // Non-fatal: use default client name
