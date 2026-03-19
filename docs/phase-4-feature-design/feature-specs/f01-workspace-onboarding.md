@@ -701,7 +701,7 @@ Rules:
 - If a section has no relevant content, include the heading with "No information found -- please add details."
 ```
 
-**Model:** Claude Sonnet 4 (per arch section 6.6). Temperature: 0.3. Direct Anthropic SDK call with `logLLMUsage()`.
+**Model:** Claude Sonnet 4 via OpenRouter (`anthropic/claude-sonnet-4-20250514`). Temperature: 0.3. OpenAI-compatible SDK call with `logLLMUsage()`.
 
 **Anti-bot mitigation:**
 - 2-3 second delays between HTTP requests.
@@ -984,7 +984,7 @@ Output: Plain text, structured with attribute headers. Each section 2-4 sentence
 | Dependency | Usage | Notes |
 |------------|-------|-------|
 | `@whiskeysockets/baileys` | WhatsApp Web protocol: QR generation, session management, message history | Node.js only. Requires separate deployment (not Deno Edge Functions). |
-| Anthropic SDK (Claude Sonnet 4) | KB structuring, SOP generation, SOP refinement, tone extraction | Direct SDK per arch section 6.6. All calls logged to `llm_usage`. |
+| OpenRouter (Claude Sonnet 4) | KB structuring, SOP generation, SOP refinement, tone extraction | OpenAI-compatible SDK with `baseURL: 'https://openrouter.ai/api/v1'`. All calls logged to `llm_usage`. |
 | OpenAI SDK (`text-embedding-3-small`) | Knowledge chunk embeddings | 1536-dimension vectors for `knowledge_chunks.embedding`. |
 | Instagram public web endpoints | Profile scraping | No API key. Fragile -- treat as best-effort with manual fallback. |
 | `pgvector` Postgres extension | Vector similarity search | Enabled in Supabase project. |
@@ -1006,7 +1006,7 @@ Output: Plain text, structured with attribute headers. Each section 2-4 sentence
 | Supabase project with Auth, pgvector, pgmq enabled | Must exist. |
 | Database migrations applied (`workspaces`, `staff`, `knowledge_chunks`) | Part of F-01 scope. |
 | `auth.workspace_id()` function | Part of `002_rls_policies.sql`. |
-| Anthropic API key (Claude Sonnet 4) | Must be provisioned and set as Edge Function secret. |
+| OpenRouter API key | Must be provisioned and set as Edge Function secret (`OPENROUTER_API_KEY`). Routes to Claude Sonnet 4. |
 | OpenAI API key (embeddings) | Must be provisioned and set as Edge Function secret. |
 | Node.js host for Baileys (Railway) | Must be provisioned. This is the only non-Supabase/Vercel infrastructure. |
 

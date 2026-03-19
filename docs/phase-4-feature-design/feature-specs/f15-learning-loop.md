@@ -1154,7 +1154,7 @@ Implements sections 4.1-4.4 (LLM classification).
 
 - [ ] `_shared/classification-prompt.ts` — `buildClassificationPrompt()` function with taxonomy, few-shot examples, and existing key injection.
 - [ ] `_shared/classification-parser.ts` — `parseClassificationResponse()` with category validation, severity validation, and unknown category logging.
-- [ ] Integration with Anthropic SDK (`claude-3-5-haiku-20241022`).
+- [ ] Integration with OpenRouter (`anthropic/claude-haiku-4-5-20251001`).
 - [ ] LLM usage logging after every classification call.
 - [ ] Unit tests: prompt construction with 0, 1, and 50 existing keys.
 - [ ] Unit tests: response parsing with valid JSON, invalid categories (filtered), unparseable response (returns null).
@@ -1325,7 +1325,7 @@ None. F-15 is the terminal feature in the dependency graph. Its output (communic
 
 | Service | Usage | Risk |
 |---|---|---|
-| Anthropic API (Claude Haiku) | Edit classification + instruction generation | LLM failure is gracefully handled; signals remain unprocessed and retry |
+| OpenRouter (Claude Haiku) | Edit classification + instruction generation | LLM failure is gracefully handled; signals remain unprocessed and retry |
 | Supabase PostgreSQL | All data storage and pgmq queue | Core infrastructure dependency |
 
 ---

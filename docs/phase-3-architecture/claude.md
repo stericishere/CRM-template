@@ -23,7 +23,7 @@ Polished with cherry-picks from Solutions A and B per judge consensus. Final arc
 | Scheduled jobs | pg_cron + pg_net (Supabase extensions) |
 | Real-time | Supabase Realtime (Postgres Changes) |
 | File storage | Supabase Storage |
-| LLM | Claude Sonnet 4 (drafting), Haiku (compaction), direct SDK |
+| LLM | Claude Sonnet 4 (drafting), Haiku (compaction), via OpenRouter |
 | Embeddings | text-embedding-3-small (OpenAI) |
 | Payments | Stripe |
 | WhatsApp | Baileys v6+ (WhatsApp Web protocol, QR pairing) on Railway |
@@ -36,7 +36,7 @@ Polished with cherry-picks from Solutions A and B per judge consensus. Final arc
 - **Edge Functions for webhooks + processing, Next.js for staff API** — 6 Edge Functions, 150s timeout comfortable for LLM calls (ADR-001)
 - **Flat codebase over DDD bounded contexts** — solo founder speed, refactor when team > 2 (ADR-003)
 - **No COS LLM call for MVP** — "Today's View" is a SQL query, not an LLM invocation
-- **Direct LLM SDK over abstraction layer** — one provider, switch later is small refactor (ADR-005)
+- **OpenRouter for all LLM calls (including embeddings)** — OpenAI-compatible SDK, models from env vars (PRO_MODEL, FLASH_MODEL, SMALL_MODEL, EMBEDDING_MODEL). Replaces "direct SDK" decision. (ADR-005 amended)
 - **4-layer isolation** — Supabase Auth -> RLS -> query scoping -> tool parameter injection (ADR-003)
 - **Dual notification pattern** — raw message saved at webhook time (staff sees it immediately via Realtime), draft arrives async after LLM processing
 - **workspace_id denormalized** on messages, drafts, notes, proposed_actions for efficient Realtime filtering
@@ -111,3 +111,49 @@ Polished with cherry-picks from Solutions A and B per judge consensus. Final arc
 ## Next Phase
 
 Architecture locked. Proceed to `/phase-4-feature-design` for user stories and feature specs.
+
+---
+
+## Sprint 2 Implementation Amendments (March 2026)
+
+The following decisions were made during Sprint 2 implementation. Each amends or refines the original architecture above. See `architecture-final.md` Section 19 for the full list.
+
+### LLM Integration (ADR-005 amended)
+- All LLM calls (drafting, compaction, embeddings) route through **OpenRouter** using OpenAI-compatible SDK (`baseURL: 'https://openrouter.ai/api/v1'`).
+- Models are env vars: `PRO_MODEL`, `FLASH_MODEL`, `SMALL_MODEL`, `EMBEDDING_MODEL`. No model IDs in code.
+- Embeddings go through OpenRouter too — not direct OpenAI API.
+
+### Context Architecture
+- `ReadOnlyContext` explicitly split into `GlobalContext` (workspace-level, cacheable) and `MessageContext` (per-client, per-message).
+- `GlobalContext` fields: `identity`, `agent`, `tools`, `businessContext` (includes `scheduledReminder`), `memory`, `heartbeat`.
+- Agent system prompt templates are Markdown files at `src/app/api/workspaces/agent/`.
+- Builder modules live in `global-context/` at project root.
+
+### Approval Policy
+- Auto tier is **empty in MVP**. All agent-proposed writes go through staff review.
+- This includes `note_create`, `tag_attach`, `last_contacted_update` — previously listed as auto.
+- Auto tier reserved for future cron job actions (appointment reminders, etc.).
+- Approve-action execution order: execute domain action first, mark `approved` only on success. Failure leaves `pending` for retry.
+- If `proposed_actions` INSERT fails after draft save: draft is deleted to preserve idempotency.
+
+### Booking Flow
+- `calendar_book` tool captures `appointmentType + startTime` (not `slotId`).
+- Executor computes `end_time = start_time + durationMinutes` from `vertical_config.appointmentTypes`.
+- Default `durationMinutes = 60` if not configured.
+
+### Idempotency
+- `drafts.source_message_id` (UUID FK to `messages`) is the per-message idempotency key.
+- Unique index: one draft per inbound message.
+- Multiple messages before staff review each get their own draft.
+
+### DLQ
+- `inbound_dlq` is a pgmq queue (not a table).
+- DLQ write happens **before** archiving the main queue message.
+
+### Baileys Authentication
+- Send requests include `x-api-secret` header from `BAILEYS_API_SECRET` env var.
+- Non-2xx responses fail the action and set `messages.delivery_status = 'failed'`.
+
+### Sprint 3 Design (proactive operations)
+- Four cron jobs planned: heartbeat (2h), appointment reminder (daily 9am), follow-up trigger (hourly, 72h per-client timer), memory compaction (daily 3am).
+- Spec: `docs/phase-4-feature-design/feature-specs/proactive-operations-cron.md`.

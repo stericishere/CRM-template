@@ -26,7 +26,7 @@ Key canonical decisions this spec adheres to:
 - **Reuses F-06 proposed_actions flow** -- all client data changes and follow-up creations go through the existing `ProposedAction` -> confirmation card -> `approve-action` Edge Function pipeline. No new approval infrastructure.
 - **Flat module structure** -- shared code in `supabase/functions/_shared/`. No bounded contexts.
 - **Supabase Realtime** -- new `proposed_actions` INSERTs fire Realtime events automatically. Staff sees confirmation cards appear in the thread without polling.
-- **Direct Anthropic SDK** -- LLM calls use `@anthropic-ai/sdk` directly via the shared `llm-client.ts` module.
+- **OpenRouter for LLM calls** -- LLM calls use OpenAI-compatible SDK with OpenRouter API via the shared `llm-client.ts` module.
 
 ---
 

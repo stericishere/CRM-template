@@ -22,7 +22,7 @@ Key canonical decisions this spec adheres to:
 - **pgmq for queuing** -- any retry or async work uses pgmq, not Redis/BullMQ.
 - **Supabase Realtime** -- draft-ready and confirmation-ready notifications use Postgres Changes on `proposed_actions` and `drafts` tables (denormalized `workspace_id` for filtering).
 - **Flat module structure** -- shared code lives in `supabase/functions/_shared/`, not in bounded-context layers.
-- **Direct Anthropic SDK** -- no LLM abstraction layer; irrelevant to F-06 but noted for consistency.
+- **OpenRouter for LLM calls** -- uses OpenAI-compatible SDK with OpenRouter API; irrelevant to F-06 but noted for consistency.
 - **pg_cron + pg_net** -- re-notification timer uses pg_cron, not BullMQ delayed jobs.
 
 The MVP trust model is **fixed** (hardcoded tier assignments). All draft replies require staff review. No auto-send. No per-workspace policy customization.
@@ -76,9 +76,11 @@ The `ApprovalPolicy` is a static configuration object (not database-stored for M
 
 | Tier | `actionType` values |
 |---|---|
-| `auto` | `note_create` (source: `ai_extracted`), `last_contacted_update`, `tag_attach` (low-risk tags only) |
-| `review` | `client_update`, `booking_create`, `followup_create`, `message_send`, any unmapped type |
+| `auto` | *(empty in MVP — reserved for future cron job actions such as scheduled reminders)* |
+| `review` | `booking_create`, `client_update`, `followup_create`, `message_send`, `note_create`, `tag_attach`, `last_contacted_update`, any unmapped type |
 | `human_only` | `refund_request`, `pricing_change`, `policy_exception`, `complaint_handling`, `liability_commitment` |
+
+**Sprint 2 decision:** The auto tier is intentionally empty for MVP. All agent-proposed writes go through staff review. This preserves full human oversight during the initial rollout period. The auto tier is reserved for future cron-triggered actions (e.g., appointment reminder messages) that are low-risk and time-sensitive.
 
 Human-only tier is also evaluated at the **intent classification** level. When the Client Worker classifies an inbound message intent as matching a human-only category, the system suppresses draft generation and proposal creation entirely. This evaluation happens in the `process-message` flow, before tool calls are made.
 
@@ -107,7 +109,14 @@ Each handler:
 1. Performs the domain write (INSERT or UPDATE).
 2. Returns the result (success or error with details).
 
-The `approve-action` Edge Function wraps the status transition + handler execution in a transaction. If the handler fails, the transaction rolls back, and the `ProposedAction` stays `pending`.
+**Execution order (Sprint 2 decision):** On approval, the `approve-action` Edge Function **executes the domain action first**, then sets `status = 'approved'` only on success. If execution fails, `status` stays `pending` and staff can retry. On rejection, `status = 'rejected'` is set immediately without execution.
+
+This differs from a wrapping transaction model: the status transition is conditional on execution success, not rolled back with it. The sequence is:
+1. Execute domain write (INSERT booking, PATCH client, etc.).
+2. If success: UPDATE `proposed_actions SET status = 'approved', reviewed_at = now(), reviewed_by = $staffId`.
+3. If failure: return error to staff app. `ProposedAction` remains `pending`. Staff sees "Action could not be completed — please try again."
+
+**Proposed-actions rollback (idempotency safety):** If the INSERT into `proposed_actions` fails after a draft has already been saved in `process-message`, the draft is **deleted** (rolled back). This ensures the idempotency check on retry will not find a draft and will reprocess the message correctly.
 
 ### 2.4 Tool parameter injector (`supabase/functions/_shared/tool-executor.ts`)
 
@@ -285,9 +294,10 @@ CREATE INDEX idx_proposed_actions_stale
 {
   appointment_type: 'initial_consultation',
   start_time: '2026-03-22T14:00:00+08:00',
-  end_time: '2026-03-22T15:00:00+08:00',
+  // end_time is NOT stored in payload — computed at execution time:
+  // end_time = start_time + workspaces.vertical_config.appointmentTypes[appointment_type].durationMinutes
+  // Default durationMinutes = 60 if not configured.
   notes: 'Client prefers afternoon slots',
-  slot_id: 'slot-uuid-here'  // from calendar_query results
 }
 ```
 

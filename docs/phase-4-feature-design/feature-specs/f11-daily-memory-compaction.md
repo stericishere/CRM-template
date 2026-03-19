@@ -29,7 +29,7 @@ The `daily-cron` Edge Function is the single entry point for all daily scheduled
 | File | Responsibility |
 |------|----------------|
 | `compaction-prompt.ts` | Compaction system prompt template. Instructs the LLM to merge existing summary with new messages into a ~2,000-token third-person factual summary. Includes priority ordering rules (preferences > milestones > unresolved topics > style > history). |
-| `llm-client.ts` | Thin wrapper around the Anthropic SDK. Used by compaction with Claude Haiku model. Logs usage to `llm_usage` table. |
+| `llm-client.ts` | OpenRouter client using OpenAI-compatible SDK. Used by compaction with `FLASH_MODEL` env var. Logs usage to `llm_usage` table. |
 | `types/memory.ts` | TypeScript types for the `memories` table rows and compaction inputs/outputs. |
 
 ### 1.3 Database additions
@@ -367,7 +367,7 @@ async function assembleCompactionInput(
 ```typescript
 async function compactClient(
   supabase: SupabaseClient,
-  anthropic: Anthropic,
+  llmClient: OpenAI,  // OpenRouter via OpenAI SDK
   workspaceId: string,
   clientId: string,
   lastCompactedAt: Date | null,

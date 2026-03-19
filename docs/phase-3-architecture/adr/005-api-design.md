@@ -50,8 +50,12 @@ Next.js routes use the authenticated user's JWT. RLS enforces workspace isolatio
 ### LLM Integration Pattern
 
 **Single agent with tools** — one LLM invocation per inbound message:
-- Model: Claude Sonnet 4 (drafting), Haiku (compaction)
-- Direct SDK call (`@anthropic-ai/sdk`), no abstraction layer
+- Models configured via environment variables:
+  - `PRO_MODEL` — drafting, tool-calling (e.g., `anthropic/claude-sonnet-4-20250514`)
+  - `FLASH_MODEL` — compaction, cheap tasks (e.g., `anthropic/claude-haiku-4-5-20251001`)
+  - `SMALL_MODEL` — lightweight tasks
+  - `EMBEDDING_MODEL` — embeddings (e.g., `text-embedding-3-small`)
+- OpenRouter with OpenAI-compatible SDK (`baseURL: 'https://openrouter.ai/api/v1'`)
 - Tool loop: max 5 iterations
 - Tool parameter injection: `workspaceId` and `clientId` immutable, set by runtime
 - Cost logged to `llm_usage` table on every call
@@ -59,9 +63,11 @@ Next.js routes use the authenticated user's JWT. RLS enforces workspace isolatio
 **Approval boundary** — three trust tiers:
 | Tier | Actions | Behavior |
 |---|---|---|
-| auto | Save note, update last_contacted | Execute immediately, audit log |
-| review | Booking, client update, follow-up, draft | ProposedAction → staff confirmation card |
+| auto | *(empty in MVP — reserved for future cron job actions)* | Execute immediately, audit log |
+| review | All agent-proposed writes: booking_create, client_update, followup_create, message_send, note_create, tag_attach, last_contacted_update | ProposedAction → staff confirmation card |
 | human_only | Refund, pricing, complaint | Flag conversation, no draft |
+
+**Sprint 2 amendment:** The auto tier is empty for MVP. All agent-proposed actions require staff review. Execute-before-approve semantics: domain write executes first; `status = 'approved'` is set only on success.
 
 ### Rate Limiting
 
@@ -85,6 +91,6 @@ Next.js routes use the authenticated user's JWT. RLS enforces workspace isolatio
 - Staff actions that need Edge Function processing (send, approve) have an extra hop
 
 ### Reversal Triggers
-- ADR-5 (direct SDK): switch to OpenRouter if multi-model fallback needed
+- ADR-5 (OpenRouter): switch to direct provider SDK if OpenRouter latency/reliability becomes an issue
 - Rate limits too restrictive: make configurable per workspace
 - Edge Function limitations: extract to dedicated Node.js server

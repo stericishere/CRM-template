@@ -20,7 +20,7 @@ Key canonical decisions this spec adheres to:
 
 - **process-message Edge Function (Deno)** handles the entire pipeline: dequeue, normalize, find-or-create, context assembly, LLM call, tool loop, approval eval, save draft (architecture-final.md SS 3.2).
 - **pgmq for queuing** -- messages are dequeued from pgmq with 60-second visibility timeout. Advisory locks via `pg_try_advisory_lock(hashtext(session_key))` serialize per-client processing.
-- **Claude Sonnet 4 via direct Anthropic SDK** -- no abstraction layer. Single LLM call per inbound message (architecture-final.md SS 6.6).
+- **Claude Sonnet 4 via OpenRouter** -- uses OpenAI-compatible SDK with `baseURL: 'https://openrouter.ai/api/v1'`. Model ID: `anthropic/claude-sonnet-4-20250514`. Single LLM call per inbound message. (Owner decision: OpenRouter for model flexibility and unified billing; ADR-005 amended.)
 - **pgvector for knowledge search** with `text-embedding-3-small` (1536 dimensions, cosine similarity) (architecture-final.md SS 9.1).
 - **Supabase Realtime** for dual notification pattern: `messages` INSERT fires immediately (staff sees message), `drafts` INSERT fires after LLM processing (staff sees draft) (architecture-final.md SS 2.1 steps 6 and 11).
 - **Flat module structure** -- shared code in `supabase/functions/_shared/`, not DDD bounded contexts.
@@ -68,7 +68,13 @@ Step 13: logLLMUsage(workspaceId, clientId, model, tokensIn, tokensOut, latencyM
 
 **Idempotency guard:**
 
-Before running context assembly, check if a draft already exists for this specific inbound message (by `wamid` or message `id`). If so, skip processing. This prevents duplicate LLM calls on retry.
+Before running context assembly, check if a draft already exists for this specific inbound message using `drafts.source_message_id` (UUID FK to `messages.id`). Idempotency is **per-message, not per-conversation**: multiple client messages received before staff reviews each get their own draft. The guard query is:
+
+```sql
+SELECT id FROM drafts WHERE source_message_id = $messageId LIMIT 1;
+```
+
+If a row exists, skip processing. This prevents duplicate LLM calls on retry without blocking new messages from the same client.
 
 ### 2.2 Context assembler (`supabase/functions/_shared/context-assembly.ts`)
 
@@ -182,26 +188,30 @@ ${calendarDisabledNote(workspace)}`;
 
 ### 2.4 Agent runtime (`supabase/functions/_shared/agent-runtime.ts`)
 
-The Client Worker runtime: manages the LLM API call, structured output parsing, and the tool execution loop.
+The Client Worker runtime: manages the LLM API call, structured output parsing, and the tool execution loop. Uses OpenRouter via OpenAI-compatible SDK.
 
 ```typescript
+import { getLLMClient, DEFAULT_MODEL } from './llm-client.ts';
+
 export async function invokeClientWorker(
   systemPrompt: string,
   context: ReadOnlyContext,
   toolRegistry: ToolRegistry,
   session: { workspaceId: string; clientId: string }
 ): Promise<ClientWorkerResult> {
-  const anthropic = new Anthropic({ apiKey: Deno.env.get('ANTHROPIC_API_KEY')! });
+  const client = getLLMClient();
 
   // Build the messages array
   const messages = buildConversationMessages(context);
 
-  // First LLM call
-  let response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+  // First LLM call (OpenRouter, OpenAI-compatible format)
+  let response = await client.chat.completions.create({
+    model: DEFAULT_MODEL,  // 'anthropic/claude-sonnet-4-20250514'
     max_tokens: 1024,
-    system: systemPrompt,
-    messages,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      ...messages,
+    ],
     tools: buildToolDefinitions(toolRegistry, session),
   });
 
@@ -211,50 +221,57 @@ export async function invokeClientWorker(
   const MAX_TOOL_LOOPS = 5;
 
   // Tool execution loop
-  while (response.stop_reason === 'tool_use' && loopCount < MAX_TOOL_LOOPS) {
+  while (response.choices[0]?.finish_reason === 'tool_calls' && loopCount < MAX_TOOL_LOOPS) {
     loopCount++;
-    const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
+    const toolCalls = response.choices[0].message.tool_calls ?? [];
 
-    const toolResults = [];
-    for (const toolCall of toolUseBlocks) {
-      const result = await executeToolCall(toolCall, session, toolRegistry);
+    const toolResultMsgs = [];
+    for (const toolCall of toolCalls) {
+      const result = await executeToolCall({
+        id: toolCall.id,
+        name: toolCall.function.name,
+        arguments: JSON.parse(toolCall.function.arguments),
+      }, session, toolRegistry);
       if (result.proposedAction) {
         proposedActions.push(result.proposedAction);
       }
-      toolResults.push({
-        type: 'tool_result' as const,
-        tool_use_id: toolCall.id,
+      toolResultMsgs.push({
+        role: 'tool' as const,
+        tool_call_id: toolCall.id,
         content: JSON.stringify(result.output),
       });
       allToolResults.push(result);
     }
 
     // Continue conversation with tool results
-    messages.push({ role: 'assistant', content: response.content });
-    messages.push({ role: 'user', content: toolResults });
+    messages.push(response.choices[0].message);
+    messages.push(...toolResultMsgs);
 
-    response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+    response = await client.chat.completions.create({
+      model: DEFAULT_MODEL,
       max_tokens: 1024,
-      system: systemPrompt,
-      messages,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...messages,
+      ],
       tools: buildToolDefinitions(toolRegistry, session),
     });
   }
 
   // Extract the final text response (the draft)
-  const draftText = extractDraftText(response);
-  const structuredOutput = extractStructuredOutput(response);
+  const responseText = response.choices[0]?.message.content ?? '';
+  const { intent, confidence, scenarioType, draftText } = parseAgentResponse(responseText);
 
   return {
     draft: draftText,
-    intent: structuredOutput.intent_classified,
-    confidence: structuredOutput.confidence_score,
+    intent,
+    confidence,
+    scenarioType,
     knowledgeSources: collectKnowledgeSources(allToolResults, context.knowledgeChunks),
     proposedActions,
     usage: {
-      tokensIn: sumInputTokens(response),
-      tokensOut: sumOutputTokens(response),
+      tokensIn: response.usage?.prompt_tokens ?? 0,
+      tokensOut: response.usage?.completion_tokens ?? 0,
     },
   };
 }
@@ -266,19 +283,26 @@ export async function invokeClientWorker(
 
 ### 2.5 LLM client (`supabase/functions/_shared/llm-client.ts`)
 
-Thin wrapper around the Anthropic SDK for Deno. No abstraction layer -- single provider for MVP.
+OpenRouter client using OpenAI-compatible SDK. Routes to Claude Sonnet 4 via OpenRouter for model flexibility and unified billing.
 
 ```typescript
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'https://esm.sh/openai@4';
 
-export function createAnthropicClient(): Anthropic {
-  return new Anthropic({
-    apiKey: Deno.env.get('ANTHROPIC_API_KEY')!,
+const DEFAULT_MODEL = 'anthropic/claude-sonnet-4-20250514';
+
+export function getLLMClient(): OpenAI {
+  return new OpenAI({
+    apiKey: Deno.env.get('OPENROUTER_API_KEY')!,
+    baseURL: 'https://openrouter.ai/api/v1',
+    defaultHeaders: {
+      'HTTP-Referer': Deno.env.get('SITE_URL') ?? 'https://crm-template.vercel.app',
+      'X-Title': 'CRM Template',
+    },
   });
 }
 ```
 
-The Anthropic SDK is imported directly via Deno's npm specifier (`npm:@anthropic-ai/sdk`). No modelgateway. No provider switching logic. If/when a provider switch is needed, this is a one-file refactor.
+Uses OpenAI SDK with OpenRouter's API endpoint. Model ID uses OpenRouter format (`anthropic/claude-sonnet-4-20250514`). The OpenAI SDK provides a stable interface; switching models is a one-line change.
 
 ### 2.6 Tool registry (`supabase/functions/_shared/tool-registry.ts`)
 
@@ -318,13 +342,13 @@ export const TOOL_REGISTRY: Record<string, ToolDefinition> = {
 
   calendar_book: {
     name: 'calendar_book',
-    description: 'Propose a booking for a specific time slot.',
+    description: 'Propose a booking for a specific appointment type and start time.',
     authority: 'propose_write',
     schema: z.object({
       workspaceId: z.string().uuid(),
       clientId: z.string().uuid(),
-      slotId: z.string(),
-      appointmentType: z.string(),
+      appointmentType: z.string(),   // key from verticalConfig.appointmentTypes
+      startTime: z.string().datetime(),  // ISO 8601; end_time computed from durationMinutes at execution
       notes: z.string().optional(),
     }),
     fixedParams: {},
@@ -375,7 +399,7 @@ export const TOOL_REGISTRY: Record<string, ToolDefinition> = {
 };
 ```
 
-**Dynamic tool availability:** The `buildToolDefinitions()` function filters the registry before passing tools to the LLM. If Google Calendar is not connected for the workspace, `calendar_query` and `calendar_book` are excluded from the tool array sent to the Anthropic API.
+**Dynamic tool availability:** The `buildToolDefinitions()` function filters the registry before passing tools to the LLM. If Google Calendar is not connected for the workspace, `calendar_query` and `calendar_book` are excluded from the tool array sent to OpenRouter.
 
 **Tool parameter injection:** Handled by `executeToolCall()` in `_shared/tool-executor.ts` (specified in F-06). `workspaceId` and `clientId` are always overwritten with session values.
 
@@ -606,26 +630,48 @@ CREATE INDEX idx_drafts_conversation ON drafts(conversation_id, created_at DESC)
 
 ### 3.3 `ReadOnlyContext` type (canonical from architecture-final.md SS 6.2)
 
-```typescript
-type ReadOnlyContext = {
-  sessionKey: string;
+**Sprint 2 implementation:** `ReadOnlyContext` is split into `GlobalContext` (workspace-level, cacheable) and `MessageContext` (per-client, per-message). The LLM call receives `ReadOnlyContext = GlobalContext & MessageContext`.
 
-  // GLOBAL -- same for every client in this workspace
-  workspace: {
+```typescript
+// GlobalContext — workspace-level, safe to cache per workspace
+interface GlobalContext {
+  identity: {
     businessName: string;
-    timezone: string;
-    businessHours: Record<string, { open: string; close: string }>;
+    vertical: string;
+    description: string;
     toneProfile: string;
   };
-  verticalConfig: {
+  agent: {
+    sopRules: string[];
+    intentTaxonomy: string[];
     customFields: CustomFieldDef[];
     appointmentTypes: AppointmentTypeDef[];
-    sopRules: string[];
   };
-  communicationRules: CommunicationRule[];
-  knowledgeChunks: KnowledgeChunk[];
+  tools: {
+    calendarConnected: boolean;
+    knowledgeBaseEnabled: boolean;
+  };
+  businessContext: {
+    timezone: string;
+    businessHours: Record<string, { open: string; close: string }>;
+    scheduledReminder: {
+      enabled: boolean;
+      daysBefore: number;  // default: 1
+    };
+  };
+  memory: {
+    communicationRules: CommunicationRule[];  // learned from edit loop, empty initially
+  };
+  heartbeat: {
+    workspaceId: string;
+    status: string;
+  };
+}
 
-  // CLIENT-SCOPED -- isolation boundary
+// MessageContext — per-client, per-message, assembled fresh on every invocation
+interface MessageContext {
+  sessionKey: string;  // 'workspace:{id}:client:{id}'
+  knowledgeChunks: KnowledgeChunk[];  // top-K semantic search results
   client: {
     id: string;
     name: string;
@@ -659,16 +705,22 @@ type ReadOnlyContext = {
     createdAt: string;
   }>;
   conversationState: string;
-
-  // The message being processed
   inboundMessage: {
     content: string;
     mediaType: string | null;
     mediaTranscription: string | null;
     timestamp: string;
   };
-};
+}
+
+// ReadOnlyContext is the union passed to the LLM.
+type ReadOnlyContext = GlobalContext & MessageContext;
 ```
+
+**Agent system prompt templates** are Markdown files at `src/app/api/workspaces/agent/`:
+- `IDENTITY.md`, `AGENT.md`, `TOOLS.md`, `BUSINESS.md`, `MEMORY.md`, `HEARTBEAT.md`, `OUTPUT.md`
+
+Builder modules in `global-context/` at project root populate `GlobalContext` from the database.
 
 ### 3.4 `ClientWorkerResult` type
 
@@ -748,7 +800,7 @@ Context is assembled in a fixed order. Each section has a deterministic token bu
 
 ### 4.3 Token counting
 
-Token counting uses a lightweight tokenizer appropriate for Claude models. For MVP, use `@anthropic-ai/tokenizer` or a simple word-based approximation (1 token ~ 4 characters). Exact token counts are not critical -- the budget is a cost and latency target, not a hard wall (ADR-3).
+Token counting uses a simple word-based approximation (1 token ~ 4 characters). Exact token counts are not critical -- the budget is a cost and latency target, not a hard wall (ADR-3).
 
 ```typescript
 export function estimateTokens(text: string): number {
@@ -801,23 +853,33 @@ This pattern repeats for every client-scoped loader. The `workspace_id` filter i
 
 ## 5. LLM Integration
 
-### 5.1 Anthropic SDK setup
+### 5.1 OpenRouter setup
 
 ```typescript
-import Anthropic from 'npm:@anthropic-ai/sdk';
+import OpenAI from 'https://esm.sh/openai@4';
 
-const anthropic = new Anthropic({
-  apiKey: Deno.env.get('ANTHROPIC_API_KEY')!,
+// Models from environment variables
+const PRO_MODEL = Deno.env.get('PRO_MODEL')!;       // drafting, tool-calling
+const FLASH_MODEL = Deno.env.get('FLASH_MODEL')!;   // compaction, cheap tasks
+const EMBEDDING_MODEL = Deno.env.get('EMBEDDING_MODEL')!;
+
+const client = new OpenAI({
+  apiKey: Deno.env.get('OPENROUTER_API_KEY')!,
+  baseURL: 'https://openrouter.ai/api/v1',
+  defaultHeaders: {
+    'HTTP-Referer': Deno.env.get('SITE_URL') ?? 'https://crm-template.vercel.app',
+    'X-Title': 'CRM Template',
+  },
 });
 ```
 
-**Deno import:** Uses `npm:` specifier for Deno compatibility. The SDK is the official `@anthropic-ai/sdk` package.
+**Deno import:** Uses `esm.sh` for OpenAI SDK. OpenRouter uses OpenAI-compatible API.
 
-**Model:** `claude-sonnet-4-20250514` for all Client Worker invocations. No model switching logic for MVP (architecture-final.md SS 6.6).
+**Models from env:** `PRO_MODEL` for Client Worker drafting, `FLASH_MODEL` for compaction, `SMALL_MODEL` for lightweight tasks, `EMBEDDING_MODEL` for embeddings. All go through OpenRouter — including embeddings (not direct OpenAI). Allows model switching without code changes.
 
 ### 5.2 System prompt composition
 
-The system prompt is injected as the `system` parameter in the Anthropic API call. It is composed dynamically per invocation from workspace config (SS 2.3 above).
+The system prompt is injected as the first message with `role: 'system'` in the OpenAI-compatible API call. It is composed dynamically per invocation from workspace config (SS 2.3 above).
 
 ### 5.3 User message construction
 
@@ -863,16 +925,16 @@ ${context.inboundMessage.mediaTranscription ? `[Voice note transcription]: ${con
 
 **Prompt injection mitigation:** Client-provided content (messages, name) is placed in the user turn with explicit XML delimiters, never in the system prompt. The system prompt contains only workspace-authored content (architecture-final.md SS 5.5).
 
-### 5.4 Tool definitions (Anthropic API format)
+### 5.4 Tool definitions (OpenAI-compatible format)
 
-Tools are converted from the internal registry to Anthropic's tool definition format:
+Tools are converted from the internal registry to OpenAI-compatible tool definition format (used by OpenRouter):
 
 ```typescript
 function buildToolDefinitions(
   registry: ToolRegistry,
   session: { workspaceId: string }
-): Anthropic.Tool[] {
-  const tools: Anthropic.Tool[] = [];
+): OpenAI.Chat.ChatCompletionTool[] {
+  const tools: OpenAI.Chat.ChatCompletionTool[] = [];
 
   for (const [name, tool] of Object.entries(registry)) {
     // Filter out calendar tools if not connected
@@ -882,9 +944,12 @@ function buildToolDefinitions(
     }
 
     tools.push({
-      name: tool.name,
-      description: tool.description,
-      input_schema: zodToJsonSchema(tool.schema),
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: zodToJsonSchema(tool.schema),
+      },
     });
   }
 
@@ -892,7 +957,7 @@ function buildToolDefinitions(
 }
 ```
 
-The `zodToJsonSchema()` utility converts Zod schemas to JSON Schema format as required by the Anthropic API. The `workspaceId` and `clientId` fields are included in the schema but are always overwritten by runtime injection (the LLM does not need to know this).
+The `zodToJsonSchema()` utility converts Zod schemas to JSON Schema format. The `workspaceId` and `clientId` fields are included in the schema but are always overwritten by runtime injection (the LLM does not need to know this).
 
 ### 5.5 Tool execution loop
 
@@ -921,23 +986,23 @@ The Client Worker outputs intent classification and confidence as structured met
 2. **Fallback parsing:** If the LLM returns plain text without calling the classification tool, parse intent and confidence from the response using regex or default to `{ intent: 'general_question', confidence: 0.5 }`.
 
 ```typescript
-function extractStructuredOutput(response: Anthropic.Message): {
+function extractStructuredOutput(response: OpenAI.Chat.ChatCompletion): {
   intent_classified: string;
   confidence_score: number;
 } {
-  // Look for the classify_and_draft tool call
-  const classifyCall = response.content.find(
-    b => b.type === 'tool_use' && b.name === 'classify_and_draft'
-  );
+  // Look for the classify_and_draft tool call in tool_calls
+  const toolCalls = response.choices[0]?.message.tool_calls ?? [];
+  const classifyCall = toolCalls.find(tc => tc.function.name === 'classify_and_draft');
 
-  if (classifyCall && classifyCall.type === 'tool_use') {
+  if (classifyCall) {
+    const args = JSON.parse(classifyCall.function.arguments);
     return {
-      intent_classified: classifyCall.input.intent,
-      confidence_score: classifyCall.input.confidence,
+      intent_classified: args.intent,
+      confidence_score: args.confidence,
     };
   }
 
-  // Fallback: default classification
+  // Fallback: parse from response text or default
   return {
     intent_classified: 'general_question',
     confidence_score: 0.5,
@@ -1306,7 +1371,7 @@ The Supabase Edge Function has a 150-second timeout (Pro tier). The LLM call typ
 
 ### 9.2 LLM API errors
 
-If the Anthropic API returns an error (rate limit, server error, invalid request):
+If the OpenRouter API returns an error (rate limit, server error, invalid request):
 
 1. Log the error with full context (workspace, client, model, error code).
 2. Do not save a draft. Do not flag as escalated.
@@ -1486,10 +1551,10 @@ Covers AC: F05-S01 (system prompt scenarios), F05-S05 (intent taxonomy in prompt
 Implements SS 2.4, SS 5 (all subsections).
 
 - [ ] `agent-runtime.ts` in `_shared/`: implement `invokeClientWorker()`.
-- [ ] Anthropic SDK setup: `npm:@anthropic-ai/sdk`, model `claude-sonnet-4-20250514`, max_tokens 1024.
+- [ ] OpenRouter setup: OpenAI SDK with `baseURL: 'https://openrouter.ai/api/v1'`, model `anthropic/claude-sonnet-4-20250514`, max_tokens 1024.
 - [ ] `buildConversationMessages()`: format context into user message with XML delimiters.
-- [ ] `buildToolDefinitions()`: convert Zod schemas to Anthropic tool format. Filter calendar tools if not connected.
-- [ ] Tool execution loop: process `tool_use` blocks, inject params, validate with Zod, execute, collect results.
+- [ ] `buildToolDefinitions()`: convert Zod schemas to OpenAI-compatible tool format. Filter calendar tools if not connected.
+- [ ] Tool execution loop: process `tool_calls`, inject params, validate with Zod, execute, collect results.
 - [ ] MAX_TOOL_LOOPS = 5. Stop loop on cap, use whatever text content exists.
 - [ ] Tool loop exhausted with no text: flag for manual handling.
 - [ ] Read tools: return result to LLM for next iteration.
@@ -1499,7 +1564,7 @@ Implements SS 2.4, SS 5 (all subsections).
 - [ ] Fallback: if LLM does not return structured classification, default to `general_question` / 0.5.
 - [ ] Knowledge source collection: from pre-retrieved chunks + tool call results.
 - [ ] Unit tests: single LLM call with no tools; LLM with tool calls; tool loop capped at 5; schema validation failure; unknown tool rejected.
-- [ ] Integration test: end-to-end LLM call with mocked Anthropic responses.
+- [ ] Integration test: end-to-end LLM call with mocked OpenRouter responses.
 
 Covers AC: F05-S04 all scenarios.
 

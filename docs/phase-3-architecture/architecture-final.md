@@ -28,7 +28,7 @@ This architecture is designed for a solo founder shipping fast. Every decision o
 | COS as separate LLM invocation path | Database queries + simple aggregation | For MVP single-operator, "today's view" is a SQL query, not an LLM call. |
 | Optimistic locking with version fields | Advisory locks via `pg_advisory_xact_lock` on processing | Simpler. Message ordering handled by queue + single-worker-per-client. |
 | Learning optimization fully specified | Signal recording only (Phase 2). Analysis deferred. | Record the data now. Build the analysis when you have enough signals. |
-| OpenRouter LLM gateway | Direct provider SDK (Anthropic/OpenAI) | One provider is fine for MVP. No abstraction layer needed yet. |
+| Direct provider SDK | OpenRouter with OpenAI-compatible SDK | OpenRouter provides model flexibility, unified billing, and works well in Deno Edge Functions. Owner decision. |
 | Custom `message_queue` table with `FOR UPDATE SKIP LOCKED` | `pgmq` extension | pgmq provides queue semantics (visibility timeout, DLQ, archive) out of the box. Less custom code, better-tested edge cases. (Cherry-picked from Solution A.) |
 | `get_user_workspace_id()` returning single UUID | `auth.workspace_id()` returning single UUID, future-proofed signature | Cleaner API, consistent naming, documented path to multi-workspace. (Cherry-picked from Solution A.) |
 
@@ -512,36 +512,25 @@ This is not a multi-agent system. There is no "scheduling agent" or "knowledge a
 
 Context assembly is a **pure function**: `assembleContext(workspaceId, clientId, inboundMessage) -> ReadOnlyContext`. It runs before the LLM is invoked. The LLM cannot influence what data it receives.
 
+**Sprint 2 implementation decision:** `ReadOnlyContext` is split into two sub-types — `GlobalContext` and `MessageContext` — to make the cacheable boundary explicit.
+
 ```typescript
-type ReadOnlyContext = {
-  // Session identity
-  sessionKey: string;  // workspace:{id}:client:{id}
+// GlobalContext — workspace-level, same for every client in this workspace.
+// Safe to cache per workspace; changes only when workspace config changes.
+type GlobalContext = {
+  identity: BusinessIdentity;    // businessName, vertical, description, toneProfile
+  agent: AgentConfig;            // sopRules, intentTaxonomy, customFields, appointmentTypes
+  tools: ToolsConfig;            // calendarConnected, knowledgeBaseEnabled
+  businessContext: BusinessContext; // timezone, businessHours, scheduledReminder (enabled, daysBefore)
+  memory: AgentMemory;           // communicationRules (learned from edit loop)
+  heartbeat: AgentHeartbeat;     // workspaceId, status
+};
 
-  // GLOBAL -- same for every client in this workspace
-  workspace: {
-    businessName: string;
-    timezone: string;
-    businessHours: Record<string, { open: string; close: string }>;
-    toneProfile: string;
-  };
-  verticalConfig: {
-    customFields: CustomFieldDef[];
-    appointmentTypes: AppointmentTypeDef[];
-    sopRules: string[];
-  };
-  communicationRules: CommunicationRule[];  // learned from edit loop (empty initially)
-  knowledgeChunks: string[];  // top-K semantic search results
-
-  // CLIENT-SCOPED -- isolation boundary, unique per client
-  client: {
-    id: string;
-    name: string;
-    phone: string;
-    lifecycleStatus: string;
-    tags: string[];
-    preferences: Record<string, unknown>;  // includes vertical custom fields
-    lastContactedAt: string;
-  };
+// MessageContext — per-client, per-message. Assembled fresh on every invocation.
+type MessageContext = {
+  sessionKey: string;            // 'workspace:{id}:client:{id}'
+  knowledgeChunks: KnowledgeChunk[];  // top-K semantic search results
+  client: ClientProfile;
   compactSummary: string | null;
   recentMessages: Array<{
     direction: 'inbound' | 'outbound';
@@ -565,8 +554,7 @@ type ReadOnlyContext = {
     source: string;
     createdAt: string;
   }>;
-
-  // The message being processed
+  conversationState: string;
   inboundMessage: {
     content: string;
     mediaType: string | null;
@@ -574,7 +562,21 @@ type ReadOnlyContext = {
     timestamp: string;
   };
 };
+
+// ReadOnlyContext is the union passed to the LLM call.
+type ReadOnlyContext = GlobalContext & MessageContext;
 ```
+
+**Agent system prompt files** are Markdown templates stored at `src/app/api/workspaces/agent/`:
+- `IDENTITY.md` — business identity and tone
+- `AGENT.md` — SOP rules, intent taxonomy
+- `TOOLS.md` — tool descriptions and availability
+- `BUSINESS.md` — timezone, business hours, scheduled reminder config
+- `MEMORY.md` — learned communication rules
+- `HEARTBEAT.md` — workspace heartbeat/status
+- `OUTPUT.md` — output format instructions
+
+The `global-context/` folder at project root contains individual builder modules that populate `GlobalContext` from the database.
 
 **Token budget (approximately 12,000 tokens per invocation):**
 
@@ -591,7 +593,7 @@ type ReadOnlyContext = {
 | Conversation state | State enum | ~100 | None |
 | Recent messages | Last 10 messages | ~3,000 | Hard cap 10 |
 
-Global sections can be cached across invocations within the same workspace (they change rarely). Client sections are assembled fresh per invocation.
+`GlobalContext` sections can be cached across invocations within the same workspace (they change rarely). `MessageContext` sections are assembled fresh per invocation.
 
 ### 6.3 Tool inventory
 
@@ -599,7 +601,7 @@ Global sections can be cached across invocations within the same workspace (they
 |---|---|---|---|---|
 | `knowledge_search` | read | `query: string` | `workspaceId` | Relevant chunks with source |
 | `calendar_query` | read | `dateRange, appointmentType` | `workspaceId` | Available time slots |
-| `calendar_book` | propose_write | `slotId, appointmentType, notes` | `workspaceId, clientId` | `ProposedAction<BookingCreate>` |
+| `calendar_book` | propose_write | `appointmentType, startTime, notes` | `workspaceId, clientId` | `ProposedAction<BookingCreate>` |
 | `update_client` | propose_write | `changes: FieldChanges` | `workspaceId, clientId` | `ProposedAction<ClientUpdate>` |
 | `create_note` | auto_write | `content, type` | `workspaceId, clientId, source: 'ai'` | `noteId` (saved immediately) |
 | `create_followup` | propose_write | `description, dueDate?` | `workspaceId, clientId` | `ProposedAction<FollowUpCreate>` |
@@ -637,16 +639,23 @@ Every tool with `propose_write` authority returns a `ProposedAction` instead of 
 
 | Tier | Actions | Behavior |
 |---|---|---|
-| **auto** | Update `last_contacted_at`, save AI-extracted note, attach low-risk tags | Execute immediately. Audit logged. |
-| **review** | Change client name, create booking, modify lifecycle status, log promises, draft replies, create follow-ups | Staff sees confirmation card. Applied only after approval. |
+| **auto** | (none in MVP — reserved for future cron job actions such as scheduled reminders) | Execute immediately. Audit logged. |
+| **review** | `booking_create`, `client_update`, `followup_create`, `message_send`, `note_create`, `tag_attach`, `last_contacted_update` — **all actions go through staff review in MVP** | Staff sees confirmation card. Applied only after approval. |
 | **human_only** | Refunds, pricing changes, policy exceptions, complaints | Flag for manual handling. No draft generated. |
+
+**Sprint 2 decision:** The auto tier is intentionally empty for MVP. All agent-proposed writes require staff confirmation. The auto tier is reserved for future cron-triggered actions (e.g., scheduled appointment reminders) that do not involve reactive client messages.
+
+**Approve-action execution order:** On approval, the `approve-action` Edge Function executes the domain action **first**, then marks status as `approved` only on success. If execution fails, the `ProposedAction` stays `pending` and staff can retry. On rejection, status is updated immediately.
+
+**Proposed-actions rollback safety:** If the `proposed_actions` INSERT fails after a draft has been saved, the draft is deleted (rolled back). This preserves idempotency — a retry will not find an existing draft and will reprocess the message correctly.
 
 ```typescript
 type ProposedAction = {
   id: string;
   workspaceId: string;
   clientId: string;
-  actionType: 'client_update' | 'booking_create' | 'followup_create' | 'message_send';
+  actionType: 'client_update' | 'booking_create' | 'followup_create' | 'message_send'
+            | 'note_create' | 'tag_attach' | 'last_contacted_update';
   summary: string;        // human-readable description for staff
   tier: 'auto' | 'review' | 'human_only';
   payload: Record<string, unknown>;
@@ -661,14 +670,33 @@ MVP trust model is fixed (hardcoded tier assignments). All draft replies require
 
 ### 6.6 LLM provider strategy
 
-MVP uses a single provider (Claude or OpenAI) via their TypeScript SDK directly. No abstraction layer.
+**Sprint 2 decision:** All LLM calls (drafting, compaction, embeddings) route through **OpenRouter** using the OpenAI-compatible SDK. No direct Anthropic or OpenAI SDK. Models are configured via environment variables — no model IDs hardcoded.
 
-| Use case | Model | Why |
+```typescript
+// All LLM calls use this client (Deno Edge Functions)
+import OpenAI from 'https://esm.sh/openai@4';
+
+const client = new OpenAI({
+  apiKey: Deno.env.get('OPENROUTER_API_KEY')!,
+  baseURL: 'https://openrouter.ai/api/v1',
+});
+
+// Model env vars — switch models without code changes
+const PRO_MODEL = Deno.env.get('PRO_MODEL')!;        // e.g. 'anthropic/claude-sonnet-4-20250514'
+const FLASH_MODEL = Deno.env.get('FLASH_MODEL')!;    // e.g. 'anthropic/claude-haiku-4-5-20251001'
+const SMALL_MODEL = Deno.env.get('SMALL_MODEL')!;    // lightweight tasks
+const EMBEDDING_MODEL = Deno.env.get('EMBEDDING_MODEL')!; // e.g. 'text-embedding-3-small'
+```
+
+| Use case | Env var | Why |
 |---|---|---|
-| Client Worker (drafting + tools) | Claude Sonnet or GPT-4o | Best tool-calling reliability + quality |
-| Embeddings | `text-embedding-3-small` (OpenAI) or Supabase built-in | Cost-effective for knowledge search |
-| Voice transcription | Whisper API | Best accuracy for short voice notes |
-| Daily compaction (summarization) | Claude Haiku or GPT-4o-mini | Cheap, summarization is straightforward |
+| Client Worker (drafting + tools) | `PRO_MODEL` | Best tool-calling reliability + quality |
+| Daily compaction (summarization) | `FLASH_MODEL` | Cheap, summarization is straightforward |
+| Lightweight tasks | `SMALL_MODEL` | Cost optimization |
+| Embeddings | `EMBEDDING_MODEL` | Routed through OpenRouter (not direct OpenAI) |
+| Voice transcription | Whisper API (future) | Best accuracy for short voice notes |
+
+**Rationale for OpenRouter:** Unified billing, model flexibility without code changes, works well in Deno Edge Functions. Switching providers is a one-line env var change, not a code change.
 
 Cost estimate per message: ~$0.01-0.03 (12K input tokens + ~500 output tokens at Sonnet/4o pricing).
 
@@ -792,7 +820,7 @@ RETURNING wamid;
 
 **Retries:** pgmq tracks read count (`read_ct`) automatically. If `process-message` fails (LLM timeout, database error), the message becomes visible again after the visibility timeout (60 seconds). The worker checks `read_ct` on dequeue -- after 3 failed attempts, the message is moved to the dead letter queue.
 
-**Dead letter:** After 3 retries, messages are moved to the DLQ: `pgmq.send('inbound_dlq', msg)`. Staff is notified that a message could not be processed. They handle it manually.
+**Dead letter:** After 3 retries, messages are moved to the DLQ via `pgmq.send('inbound_dlq', msg_payload)`. The message is only deleted from the main queue **after** the DLQ write succeeds, preserving durability. `inbound_dlq` is a pgmq queue (not a regular table). Staff is notified that a message could not be processed. They handle it manually.
 
 ### 8.2 pgmq queue setup
 
@@ -828,8 +856,9 @@ SELECT pgmq.archive('inbound_messages', $msg_id);
 
 -- Move to DLQ after max retries (in process-message worker)
 -- if msg.read_ct > 3:
-SELECT pgmq.archive('inbound_messages', $msg_id);
+-- Write to DLQ FIRST, only delete from main queue after DLQ write succeeds
 SELECT pgmq.send('inbound_dlq', $msg_payload);
+SELECT pgmq.archive('inbound_messages', $msg_id);
 ```
 
 **Per-client serialization:** pgmq does not natively support per-key ordering. The worker handles this with an advisory lock:
@@ -877,7 +906,7 @@ If the function times out:
 1. The pgmq message's visibility timeout (60s) expires, making the message visible again.
 2. The pg_cron retry picks it up and reprocesses.
 3. Context assembly is idempotent, so reprocessing is safe.
-4. The worker checks if a draft already exists for this message (idempotency guard). If so, skip.
+4. The worker checks if a draft already exists for this **specific inbound message** (idempotency guard). Idempotency is per-message, not per-conversation: `drafts.source_message_id` (UUID FK to `messages`) tracks which inbound message triggered each draft. Multiple client messages received before staff review each produce their own draft. If a draft with the same `source_message_id` already exists, skip processing.
 5. If the LLM was called but the response was not saved, the worst case is a duplicate LLM call (wasted cost, not data corruption).
 
 ### 8.5 Delivery status webhooks
@@ -1007,6 +1036,7 @@ CREATE TABLE drafts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id UUID NOT NULL REFERENCES conversations(id),
   workspace_id UUID NOT NULL REFERENCES workspaces(id),  -- denormalized for Realtime
+  source_message_id UUID REFERENCES messages(id),        -- inbound message that triggered this draft (idempotency key)
   content TEXT NOT NULL,
   intent_classified TEXT,
   confidence_score REAL,
@@ -1017,6 +1047,10 @@ CREATE TABLE drafts (
   reviewed_at TIMESTAMPTZ,
   reviewed_by UUID REFERENCES staff(id)
 );
+
+-- Idempotency index: one draft per inbound message
+CREATE UNIQUE INDEX idx_drafts_source_message ON drafts(source_message_id)
+  WHERE source_message_id IS NOT NULL;
 
 CREATE INDEX idx_drafts_workspace ON drafts(workspace_id, created_at DESC);
 
@@ -1762,6 +1796,8 @@ baileys-server/
 | `/status/:workspaceId` | GET | Connection status (connected/disconnected/qr_pending) |
 | `/reconnect/:workspaceId` | POST | Force reconnect |
 
+**Baileys server authentication:** All requests to the Baileys server (from Edge Functions or Next.js) must include the `x-api-secret` header matching `BAILEYS_API_SECRET` env var. Non-2xx responses from the server fail the `message_send` action and set `messages.delivery_status = 'failed'`. Staff sees the error on the confirmation card.
+
 **Auth state persistence:**
 ```sql
 CREATE TABLE baileys_auth (
@@ -1905,6 +1941,32 @@ Based on the verification questions above, the following changes were made to th
 
 ---
 
+## 19. Sprint 2 implementation decisions (March 2026)
+
+These decisions were locked during Sprint 2 implementation and amend the original architecture above.
+
+1. **OpenRouter for all LLM calls (including embeddings):** All LLM and embedding calls route through OpenRouter using the OpenAI-compatible SDK. No direct Anthropic or OpenAI SDK. Model IDs come from env vars (`PRO_MODEL`, `FLASH_MODEL`, `SMALL_MODEL`, `EMBEDDING_MODEL`). See Section 6.6.
+
+2. **GlobalContext / MessageContext split:** `ReadOnlyContext` is explicitly split into `GlobalContext` (workspace-level, cacheable) and `MessageContext` (per-client, per-message). Markdown agent prompt templates live at `src/app/api/workspaces/agent/`. Builder modules live in `global-context/`. See Section 6.2.
+
+3. **All MVP actions are review tier:** The `auto` tier is empty in MVP. All agent-proposed writes (including `note_create`, `tag_attach`, `last_contacted_update`) go through staff review. Auto tier is reserved for future cron job actions. See Section 6.5.
+
+4. **Booking tool captures `appointmentType + startTime`, not `slotId`:** The `calendar_book` tool receives `appointment_type` and `start_time` from the LLM. The executor looks up `durationMinutes` from `workspaces.vertical_config.appointmentTypes[]` and computes `end_time = start_time + durationMinutes` (default 60 min). No `slot_id` FK required.
+
+5. **Idempotency is per-message, not per-conversation:** `drafts.source_message_id` (UUID FK to `messages`) is the idempotency key. A unique index enforces one draft per inbound message. Multiple messages before staff review each get their own draft. See Section 8.4.
+
+6. **DLQ write order:** DLQ write (`pgmq.send('inbound_dlq', ...)`) happens before archiving the main queue message. Only delete from main queue after DLQ write succeeds. See Section 8.2.
+
+7. **Baileys `x-api-secret` authentication:** All requests to the Baileys server include `x-api-secret` header from `BAILEYS_API_SECRET` env var. Non-2xx responses fail the send action and set `messages.delivery_status = 'failed'`. See Section 16.2.
+
+8. **Approve-action: execute before marking approved:** On approval, the domain action executes first; `status = 'approved'` is set only on success. On failure, status stays `pending` for retry. On rejection, status updates immediately. See Section 6.5.
+
+9. **Draft rollback on proposed_actions failure:** If inserting `proposed_actions` fails after a draft is saved, the draft is deleted. This preserves idempotency — the idempotency check will not find a draft and the message will be reprocessed on retry. See Section 6.5.
+
+10. **Proactive operations planned for Sprint 3:** Four pg_cron jobs: heartbeat (2h), appointment reminder (daily 9am), follow-up trigger (hourly, per-client 72h timer), memory compaction (daily 3am). Spec at `docs/phase-4-feature-design/feature-specs/proactive-operations-cron.md`.
+
+---
+
 ## 19. Architecture decision records (ADRs)
 
 ### ADR-1: pgmq over custom Postgres queue table
@@ -1939,13 +2001,18 @@ Based on the verification questions above, the following changes were made to th
 **Tradeoff:** No natural language "who needs follow-up today?" interface. Staff uses the Today's View page instead.
 **Reversal trigger:** Staff requests conversational cross-client queries, or the number of clients per workspace exceeds what a human can scan in a list.
 
-### ADR-5: Direct LLM SDK over abstraction layer
+### ADR-5: OpenRouter with OpenAI-compatible SDK
 
-**Context:** The previous architecture specified OpenRouter as an LLM gateway for model flexibility.
-**Decision:** Use the LLM provider's TypeScript SDK directly (e.g., `@anthropic-ai/sdk` or `openai`).
-**Why:** Fewer dependencies. No abstraction layer to maintain. MVP uses one model. Switching models later is a small refactor of the `llm-client.ts` module.
-**Tradeoff:** Switching LLM providers requires code changes to the client module.
-**Reversal trigger:** Need to run multiple models simultaneously or implement automatic fallback between providers.
+**Context:** The original architecture specified direct provider SDK (Anthropic). Owner decision amended to use OpenRouter.
+**Decision:** Use OpenRouter with OpenAI-compatible SDK (`baseURL: 'https://openrouter.ai/api/v1'`). Models configured via environment variables:
+- `PRO_MODEL` — drafting, tool-calling (default: `anthropic/claude-sonnet-4-20250514`)
+- `FLASH_MODEL` — compaction, cheap tasks (default: `anthropic/claude-haiku-4-5-20251001`)
+- `SMALL_MODEL` — lightweight tasks
+- `EMBEDDING_MODEL` — embeddings (default: `text-embedding-3-small`)
+
+**Why:** OpenRouter provides model flexibility, unified billing, and the OpenAI-compatible SDK works well in Deno Edge Functions. Env vars allow model switching without code changes.
+**Tradeoff:** Additional hop through OpenRouter. Minor latency increase.
+**Reversal trigger:** OpenRouter latency or reliability becomes unacceptable.
 
 ### ADR-6: Async webhook processing via pg_net
 
