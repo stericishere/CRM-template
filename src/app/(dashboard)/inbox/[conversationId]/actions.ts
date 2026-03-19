@@ -66,6 +66,7 @@ export async function sendDraftReply(
   const { draft, clientId, clientPhone } = data
   const workspaceId = draft.workspace_id
   const conversationId = draft.conversation_id
+  const trimmedText = finalText.trim()
 
   // 1. Fail fast if delivery is impossible — before inserting outbound message
   const baileysUrl = process.env.BAILEYS_SERVER_URL
@@ -85,7 +86,7 @@ export async function sendDraftReply(
       conversation_id: conversationId,
       workspace_id: workspaceId,
       direction: 'outbound',
-      content: finalText.trim(),
+      content: trimmedText,
       sender_type: 'staff',
       delivery_status: 'pending',
       draft_id: draftId,
@@ -101,7 +102,7 @@ export async function sendDraftReply(
     draftId,
     staffAction,
     originalDraft: draft.content,
-    finalVersion: finalText.trim(),
+    finalVersion: trimmedText,
     intentClassified: draft.intent_classified ?? 'unclassified',
     scenarioType: draft.scenario_type ?? 'unclassified',
   }).catch(() => {})
@@ -113,7 +114,7 @@ export async function sendDraftReply(
       staff_action: staffAction,
       reviewed_at: new Date().toISOString(),
       reviewed_by: staffId,
-      edited_content: staffAction === 'edited_and_sent' ? finalText.trim() : null,
+      edited_content: staffAction === 'edited_and_sent' ? trimmedText : null,
     })
     .eq('id', draftId)
 
@@ -128,7 +129,7 @@ export async function sendDraftReply(
       body: JSON.stringify({
         workspaceId,
         to: clientPhone,
-        content: finalText.trim(),
+        content: trimmedText,
       }),
     })
 

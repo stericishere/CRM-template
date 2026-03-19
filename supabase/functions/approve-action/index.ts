@@ -46,6 +46,13 @@ serve(async (req) => {
 
     const supabase = getSupabaseClient()
 
+    /** Reset reviewed_by/reviewed_at so staff can re-attempt the action. */
+    const unclaim = () =>
+      supabase
+        .from('proposed_actions')
+        .update({ reviewed_by: null, reviewed_at: null })
+        .eq('id', action_id)
+
     // 1. Atomically claim the action row via UPDATE WHERE status='pending'.
     //    This prevents two concurrent approvals from both executing side effects.
     const { data: action, error: claimError } = await supabase
@@ -61,7 +68,6 @@ serve(async (req) => {
       .single()
 
     if (claimError || !action) {
-      // PGRST116 = no rows matched — either not found or already resolved/claimed
       const is409 = claimError?.code === 'PGRST116'
       return new Response(
         JSON.stringify({ error: is409 ? 'Action not found or already resolved' : (claimError?.message ?? 'Claim failed') }),
@@ -77,11 +83,7 @@ serve(async (req) => {
         .eq('id', action_id)
 
       if (updateError) {
-        // Unclaim so staff can retry — without this the row is stranded
-        await supabase
-          .from('proposed_actions')
-          .update({ reviewed_by: null, reviewed_at: null })
-          .eq('id', action_id)
+        await unclaim()
         return new Response(JSON.stringify({ error: updateError.message }), { status: 500 })
       }
     }
@@ -105,12 +107,7 @@ serve(async (req) => {
 
       if (!executionResult.success) {
         console.error('[approve-action] Execution failed, unclaiming row:', executionResult.error)
-        // Unclaim so staff can retry
-        await supabase
-          .from('proposed_actions')
-          .update({ reviewed_by: null, reviewed_at: null })
-          .eq('id', action_id)
-
+        await unclaim()
         return new Response(
           JSON.stringify({
             success: false,
@@ -128,14 +125,8 @@ serve(async (req) => {
         .eq('id', action_id)
 
       if (updateError) {
-        // Execution succeeded but status update failed — unclaim so staff can retry.
-        // The side effect already ran, but the row must not be stranded as
-        // permanently unclaimable (reviewed_by set, status still 'pending').
         console.error('[approve-action] Status update failed after execution, unclaiming:', updateError.message)
-        await supabase
-          .from('proposed_actions')
-          .update({ reviewed_by: null, reviewed_at: null })
-          .eq('id', action_id)
+        await unclaim()
         return new Response(
           JSON.stringify({ error: `Status update failed: ${updateError.message}`, retryable: true }),
           { status: 500 }

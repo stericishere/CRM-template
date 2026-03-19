@@ -1,6 +1,7 @@
 import type { WAMessage } from '@whiskeysockets/baileys'
 import { supabase } from './supabase.js'
 import { logger } from './logger.js'
+import { jidToE164 } from './phone-utils.js'
 
 /**
  * Inbound message processing pipeline.
@@ -15,15 +16,6 @@ import { logger } from './logger.js'
 
 /** PostgreSQL unique constraint violation code */
 const PG_UNIQUE_VIOLATION = '23505'
-
-/**
- * Normalize a Baileys JID (e.g. "85291234567@s.whatsapp.net") to E.164 ("+85291234567").
- */
-function normalizePhone(jid: string): string {
-  const number = jid.split('@')[0]
-  if (!number) throw new Error(`Invalid JID: ${jid}`)
-  return `+${number}`
-}
 
 /**
  * Extract text content and media type from a Baileys WAMessage.
@@ -88,7 +80,7 @@ export async function handleInboundMessage(
   // Skip group messages — only process 1:1 chats
   if (fromJid.includes('@g.us')) return
 
-  const phone = normalizePhone(fromJid)
+  const phone = jidToE164(fromJid)
   const { text, mediaType } = extractMessageContent(msg)
 
   // Skip if no content at all (e.g. protocol messages, reactions)

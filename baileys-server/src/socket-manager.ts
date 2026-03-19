@@ -9,6 +9,7 @@ import { Boom } from '@hapi/boom'
 import { useSupabaseAuthState } from './auth-store.js'
 import { supabase } from './supabase.js'
 import { logger } from './logger.js'
+import { jidToE164 } from './phone-utils.js'
 
 /**
  * Per-workspace Baileys socket lifecycle manager.
@@ -213,28 +214,39 @@ async function syncContactNames(
   workspaceId: string,
   contacts: Contact[]
 ): Promise<void> {
-  for (const contact of contacts) {
-    if (!contact.id || !contact.notify && !contact.name) continue
+  // Build batch of (phone, displayName) pairs
+  const updates: Array<{ phone: string; displayName: string }> = []
 
-    // Extract clean name — prefer notify (push name) over name (address book)
+  for (const contact of contacts) {
+    if (!contact.id || (!contact.notify && !contact.name)) continue
+
     const displayName = (contact.notify || contact.name || '').trim()
     if (!displayName) continue
 
-    // Normalize JID to E.164 phone
-    const number = contact.id.split('@')[0]
-    if (!number) continue
-    const phone = `+${number}`
-
     try {
-      // Only update clients that have no CRM-managed name yet
-      await supabase
+      updates.push({ phone: jidToE164(contact.id), displayName })
+    } catch {
+      // Invalid JID — skip silently
+    }
+  }
+
+  if (updates.length === 0) return
+
+  // Batch update: single query per contact is unavoidable with Supabase JS
+  // client, but we fire them concurrently instead of sequentially.
+  const results = await Promise.allSettled(
+    updates.map(({ phone, displayName }) =>
+      supabase
         .from('clients')
         .update({ full_name: displayName })
         .eq('workspace_id', workspaceId)
         .eq('phone', phone)
         .or('full_name.is.null,full_name.eq.')
-    } catch (err) {
-      logger.warn({ workspaceId, phone, error: err }, 'Failed to sync contact name')
-    }
+    )
+  )
+
+  const failures = results.filter(r => r.status === 'rejected')
+  if (failures.length > 0) {
+    logger.warn({ workspaceId, failed: failures.length }, 'Some contact name syncs failed')
   }
 }

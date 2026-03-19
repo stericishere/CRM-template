@@ -68,13 +68,13 @@ export function useInboxRealtime({
   const startPollingFallback = useCallback(() => {
     if (pollingRef.current) return // already polling
 
-    pollingRef.current = setInterval(() => {
-      const supabase = createClient()
+    const supabase = createClient()
 
+    pollingRef.current = setInterval(() => {
       // Poll for new inbound messages
       supabase
         .from('messages')
-        .select('*')
+        .select('id, conversation_id, content, media_type, sender_type, created_at, direction')
         .eq('workspace_id', workspaceId)
         .eq('direction', 'inbound')
         .eq('is_read', false)
@@ -93,7 +93,7 @@ export function useInboxRealtime({
       // Poll for new drafts
       supabase
         .from('drafts')
-        .select('*')
+        .select('id, conversation_id, content, intent_classified, created_at')
         .eq('workspace_id', workspaceId)
         .order('created_at', { ascending: false })
         .limit(1)
