@@ -25,7 +25,7 @@ export type { ConversationState, ConversationEvent, TransitionTriggerSource }
 /**
  * Complete transition map: state -> event -> next_state
  */
-export const TRANSITION_MAP: Record<string, Record<string, string>> = {
+export const TRANSITION_MAP: Record<ConversationState, Partial<Record<ConversationEvent, ConversationState>>> = {
   idle: {
     inbound_message: 'awaiting_staff_review',
   },
@@ -49,7 +49,7 @@ export const TRANSITION_MAP: Record<string, Record<string, string>> = {
  * Returns the next state for a given (currentState, event) pair.
  * Throws if the transition is not in TRANSITION_MAP.
  */
-export function getNextState(currentState: string, event: string): string {
+export function getNextState(currentState: ConversationState, event: ConversationEvent): ConversationState {
   const nextState = TRANSITION_MAP[currentState]?.[event]
   if (!nextState) {
     throw new Error(
@@ -90,15 +90,22 @@ export async function transitionConversation(
   // 2. Validate + compute next state (throws on invalid)
   const nextState = getNextState(conv.state, event)
 
-  // 3. Update conversation state
-  const { error: updateError } = await supabase
+  // 3. Update conversation state (optimistic lock: only if state hasn't changed)
+  const { error: updateError, count: updatedRows } = await supabase
     .from('conversations')
     .update({ state: nextState })
     .eq('id', conversationId)
+    .eq('state', conv.state)
 
   if (updateError) {
     throw new Error(
       `Failed to update conversation state: ${updateError.message}`
+    )
+  }
+
+  if (updatedRows === 0) {
+    throw new Error(
+      `Optimistic lock failed: conversation ${conversationId} state changed concurrently`
     )
   }
 

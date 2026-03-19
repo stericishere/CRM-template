@@ -22,3 +22,17 @@ export type TransitionTriggerSource =
   | 'morning_scan'
   | 'staff_action'
   | 'inbound_message'
+
+/**
+ * Notification payload shape matching staff_notifications table.
+ */
+export interface StaffNotification {
+  notification_id: string
+  workspace_id: string
+  type: string
+  title: string
+  body: string | null
+  metadata: Record<string, unknown> | null
+  read_at: string | null
+  created_at: string
+}

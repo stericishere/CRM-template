@@ -2,20 +2,9 @@
 
 import { useEffect, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import type { StaffNotification } from '@/lib/proactive/types'
 
-/**
- * Notification payload shape matching staff_notifications table.
- */
-export interface StaffNotification {
-  notification_id: string
-  workspace_id: string
-  type: string
-  title: string
-  body: string | null
-  metadata: Record<string, unknown> | null
-  read_at: string | null
-  created_at: string
-}
+export type { StaffNotification }
 
 /**
  * Subscribe to staff_notifications via Supabase Realtime.

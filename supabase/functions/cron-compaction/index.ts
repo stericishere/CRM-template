@@ -29,6 +29,7 @@
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { getSupabaseClient } from '../_shared/db.ts'
+import { createCronRunLog, finalizeCronRunLog } from '../_shared/cron-helpers.ts'
 import { callLLM, FLASH_MODEL } from '../_shared/llm-client.ts'
 
 // ─── Constants ──────────────────────────────────────────────
@@ -60,7 +61,6 @@ interface MessageRow {
 
 serve(async (req) => {
   const supabase = getSupabaseClient()
-  const startedAt = new Date().toISOString()
 
   let workspaceId: string
 
@@ -82,21 +82,7 @@ serve(async (req) => {
   }
 
   // Create cron_run_log entry
-  const { data: runLog, error: runLogError } = await supabase
-    .from('cron_run_log')
-    .insert({
-      workspace_id: workspaceId,
-      job_type: 'compaction',
-      started_at: startedAt,
-      status: 'running',
-    })
-    .select('run_id')
-    .single()
-
-  if (runLogError) {
-    console.error('[compaction] Failed to create cron_run_log:', runLogError.message)
-  }
-  const runId = runLog?.run_id ?? null
+  const runId = await createCronRunLog('compaction', workspaceId)
 
   try {
     // 1. Query clients with message activity yesterday
@@ -123,9 +109,8 @@ serve(async (req) => {
 
       if (convError || !conversations) {
         console.error('[compaction] Failed to query conversations:', convError?.message)
-        await finalizeCronLog(supabase, runId, 'failed', 0, 0, workspaceId, {
-          error: convError?.message ?? 'No conversations found',
-        })
+        const errMsg = convError?.message ?? 'No conversations found'
+        await finalizeCronRunLog(runId, 'failed', 0, 0, { error: errMsg }, { error: errMsg })
         return new Response(
           JSON.stringify({ error: 'Failed to query conversations' }),
           { status: 500 }
@@ -160,7 +145,7 @@ serve(async (req) => {
     )
 
     if (clientIds.length === 0) {
-      await finalizeCronLog(supabase, runId, 'success', 0, 0, workspaceId, {
+      await finalizeCronRunLog(runId, 'success', 0, 0, {
         message: 'No clients with yesterday activity',
       })
       return new Response(
@@ -202,7 +187,7 @@ serve(async (req) => {
           ? 'partial_failure'
           : 'failed'
 
-    await finalizeCronLog(supabase, runId, finalStatus, clientIds.length, compacted, workspaceId, {
+    await finalizeCronRunLog(runId, finalStatus, clientIds.length, compacted, {
       clients_found: clientIds.length,
       clients_compacted: compacted,
       clients_skipped_pending: skippedPending,
@@ -226,9 +211,9 @@ serve(async (req) => {
     )
   } catch (err) {
     console.error('[compaction] Fatal error:', err)
-    await finalizeCronLog(supabase, runId, 'failed', 0, 0, workspaceId, {
+    await finalizeCronRunLog(runId, 'failed', 0, 0, {
       error: String(err),
-    })
+    }, { error: String(err) })
     return new Response(JSON.stringify({ error: String(err) }), { status: 500 })
   }
 })
@@ -448,32 +433,3 @@ function getTodayDateString(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
-// ─── Helper: finalize cron_run_log ──────────────────────────
-
-async function finalizeCronLog(
-  supabase: ReturnType<typeof getSupabaseClient>,
-  runId: string | null,
-  status: 'success' | 'partial_failure' | 'failed',
-  itemsFound: number,
-  itemsActioned: number,
-  workspaceId: string,
-  metadata: Record<string, unknown>
-): Promise<void> {
-  if (!runId) return
-
-  try {
-    await supabase
-      .from('cron_run_log')
-      .update({
-        completed_at: new Date().toISOString(),
-        status,
-        items_found: itemsFound,
-        items_actioned: itemsActioned,
-        metadata,
-        error_details: status === 'failed' ? metadata : null,
-      })
-      .eq('run_id', runId)
-  } catch (err) {
-    console.error('[compaction] Failed to finalize cron_run_log:', err)
-  }
-}

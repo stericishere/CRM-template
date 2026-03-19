@@ -50,10 +50,10 @@ export async function saveDraft(
     // Non-fatal: draft is saved, staff will see it
   }
 
-  // Start draft_review_nudge timer (1h) — fire-and-forget
+  // Start draft_review_nudge timer (1h) — fire-and-forget (don't await — non-blocking)
   // If staff doesn't review the draft within 1 hour, the timer scanner
   // will insert a staff_notifications reminder.
-  await bestEffortStartTimer(
+  bestEffortStartTimer(
     params.workspaceId,
     'draft_review_nudge',
     'draft',

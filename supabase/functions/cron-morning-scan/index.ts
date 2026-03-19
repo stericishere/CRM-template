@@ -17,6 +17,7 @@
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { getSupabaseClient } from '../_shared/db.ts'
+import { createCronRunLog, finalizeCronRunLog } from '../_shared/cron-helpers.ts'
 import { transitionConversation } from '../_shared/conversation-state.ts'
 import { bestEffortCancelTimer } from '../_shared/timer-helpers.ts'
 import { scanAndPropose } from '../_shared/scan-and-propose.ts'
@@ -49,7 +50,6 @@ interface ScanReport {
 
 serve(async (req) => {
   const supabase = getSupabaseClient()
-  const startedAt = new Date().toISOString()
 
   let workspaceId: string
 
@@ -71,21 +71,7 @@ serve(async (req) => {
   }
 
   // Create cron_run_log entry
-  const { data: runLog, error: runLogError } = await supabase
-    .from('cron_run_log')
-    .insert({
-      workspace_id: workspaceId,
-      job_type: 'morning-scan',
-      started_at: startedAt,
-      status: 'running',
-    })
-    .select('run_id')
-    .single()
-
-  if (runLogError) {
-    console.error('[morning-scan] Failed to create cron_run_log:', runLogError.message)
-  }
-  const runId = runLog?.run_id ?? null
+  const runId = await createCronRunLog('morning-scan', workspaceId)
 
   try {
     // Load workspace config
@@ -100,7 +86,7 @@ serve(async (req) => {
     if (wsError || !ws) {
       const msg = wsError?.message ?? 'Workspace not found'
       console.error('[morning-scan] Failed to load workspace config:', msg)
-      await finalizeCronLog(supabase, runId, 'failed', 0, 0, workspaceId, { error: msg })
+      await finalizeCronRunLog(runId, 'failed', 0, 0, { error: msg }, { error: msg })
       return new Response(JSON.stringify({ error: msg }), { status: 500 })
     }
 
@@ -149,7 +135,7 @@ serve(async (req) => {
       )
     }
 
-    await finalizeCronLog(supabase, runId, finalStatus, totalFound, totalActioned, workspaceId, {
+    await finalizeCronRunLog(runId, finalStatus, totalFound, totalActioned, {
       reports,
     })
 
@@ -169,9 +155,9 @@ serve(async (req) => {
     )
   } catch (err) {
     console.error('[morning-scan] Fatal error:', err)
-    await finalizeCronLog(supabase, runId, 'failed', 0, 0, workspaceId, {
+    await finalizeCronRunLog(runId, 'failed', 0, 0, {
       error: String(err),
-    })
+    }, { error: String(err) })
     return new Response(JSON.stringify({ error: String(err) }), { status: 500 })
   }
 })
@@ -694,58 +680,106 @@ async function runScan5_DailyJournal(
     tomorrow.setUTCDate(tomorrow.getUTCDate() + 1)
     const tomorrowStart = `${tomorrow.toISOString().slice(0, 10)}T00:00:00.000Z`
 
-    // ─── Aggregate stats ──────────────────────────────────────
+    // ─── Aggregate stats (parallel queries) ─────────────────────
 
-    // Messages counts
-    const { data: inboundMsgs } = await supabase
-      .from('messages')
-      .select('id', { count: 'exact', head: true })
-      .eq('workspace_id', workspaceId)
-      .eq('direction', 'inbound')
-      .gte('created_at', todayStart)
-      .lt('created_at', tomorrowStart)
-
-    const { data: outboundMsgs } = await supabase
-      .from('messages')
-      .select('id', { count: 'exact', head: true })
-      .eq('workspace_id', workspaceId)
-      .eq('direction', 'outbound')
-      .gte('created_at', todayStart)
-      .lt('created_at', tomorrowStart)
-
-    // Unique clients interacted
-    const { data: clientsInteracted } = await supabase
-      .from('messages')
-      .select('conversation_id')
-      .eq('workspace_id', workspaceId)
-      .gte('created_at', todayStart)
-      .lt('created_at', tomorrowStart)
+    const [
+      { count: inboundCount },
+      { count: outboundCount },
+      { data: clientsInteracted },
+      { count: newClientsCount },
+      { count: draftsGeneratedCount },
+      { data: editSignals },
+      { count: bookingsCreatedCount },
+      { count: bookingsCancelledCount },
+      { count: bookingsCompletedCount },
+      { data: followUpActions },
+      { count: inactiveActionsCount },
+    ] = await Promise.all([
+      // Messages inbound
+      supabase
+        .from('messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('workspace_id', workspaceId)
+        .eq('direction', 'inbound')
+        .gte('created_at', todayStart)
+        .lt('created_at', tomorrowStart),
+      // Messages outbound
+      supabase
+        .from('messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('workspace_id', workspaceId)
+        .eq('direction', 'outbound')
+        .gte('created_at', todayStart)
+        .lt('created_at', tomorrowStart),
+      // Unique clients interacted (need full rows for Set)
+      supabase
+        .from('messages')
+        .select('conversation_id')
+        .eq('workspace_id', workspaceId)
+        .gte('created_at', todayStart)
+        .lt('created_at', tomorrowStart),
+      // New clients today
+      supabase
+        .from('clients')
+        .select('id', { count: 'exact', head: true })
+        .eq('workspace_id', workspaceId)
+        .gte('created_at', todayStart)
+        .lt('created_at', tomorrowStart),
+      // Drafts generated
+      supabase
+        .from('drafts')
+        .select('id', { count: 'exact', head: true })
+        .eq('workspace_id', workspaceId)
+        .gte('created_at', todayStart)
+        .lt('created_at', tomorrowStart),
+      // Draft edit signals breakdown
+      supabase
+        .from('draft_edit_signals')
+        .select('staff_action')
+        .eq('workspace_id', workspaceId)
+        .gte('created_at', todayStart)
+        .lt('created_at', tomorrowStart),
+      // Bookings created
+      supabase
+        .from('bookings')
+        .select('id', { count: 'exact', head: true })
+        .eq('workspace_id', workspaceId)
+        .gte('created_at', todayStart)
+        .lt('created_at', tomorrowStart),
+      // Bookings cancelled
+      supabase
+        .from('bookings')
+        .select('id', { count: 'exact', head: true })
+        .eq('workspace_id', workspaceId)
+        .eq('status', 'cancelled')
+        .gte('created_at', todayStart)
+        .lt('created_at', tomorrowStart),
+      // Bookings completed
+      supabase
+        .from('bookings')
+        .select('id', { count: 'exact', head: true })
+        .eq('workspace_id', workspaceId)
+        .eq('status', 'completed')
+        .gte('created_at', todayStart)
+        .lt('created_at', tomorrowStart),
+      // Follow-ups (from proposed_actions)
+      supabase
+        .from('proposed_actions')
+        .select('id, status')
+        .eq('workspace_id', workspaceId)
+        .gte('created_at', todayStart)
+        .lt('created_at', tomorrowStart),
+      // Inactive clients today (from proposed_actions)
+      supabase
+        .from('proposed_actions')
+        .select('id', { count: 'exact', head: true })
+        .eq('workspace_id', workspaceId)
+        .eq('action_type', 'client_update')
+        .gte('created_at', todayStart)
+        .lt('created_at', tomorrowStart),
+    ])
 
     const uniqueConvs = new Set((clientsInteracted ?? []).map((m: { conversation_id: string }) => m.conversation_id))
-
-    // New clients today
-    const { data: newClients } = await supabase
-      .from('clients')
-      .select('id', { count: 'exact', head: true })
-      .eq('workspace_id', workspaceId)
-      .gte('created_at', todayStart)
-      .lt('created_at', tomorrowStart)
-
-    // Drafts generated
-    const { data: draftsGenerated } = await supabase
-      .from('drafts')
-      .select('id', { count: 'exact', head: true })
-      .eq('workspace_id', workspaceId)
-      .gte('created_at', todayStart)
-      .lt('created_at', tomorrowStart)
-
-    // Draft edit signals breakdown
-    const { data: editSignals } = await supabase
-      .from('draft_edit_signals')
-      .select('staff_action')
-      .eq('workspace_id', workspaceId)
-      .gte('created_at', todayStart)
-      .lt('created_at', tomorrowStart)
 
     const signalCounts = {
       sent_as_is: 0,
@@ -760,66 +794,25 @@ async function runScan5_DailyJournal(
       }
     }
 
-    // Bookings
-    const { data: bookingsCreated } = await supabase
-      .from('bookings')
-      .select('id', { count: 'exact', head: true })
-      .eq('workspace_id', workspaceId)
-      .gte('created_at', todayStart)
-      .lt('created_at', tomorrowStart)
-
-    const { data: bookingsCancelled } = await supabase
-      .from('bookings')
-      .select('id', { count: 'exact', head: true })
-      .eq('workspace_id', workspaceId)
-      .eq('status', 'cancelled')
-      .gte('created_at', todayStart)
-      .lt('created_at', tomorrowStart)
-
-    const { data: bookingsCompleted } = await supabase
-      .from('bookings')
-      .select('id', { count: 'exact', head: true })
-      .eq('workspace_id', workspaceId)
-      .eq('status', 'completed')
-      .gte('created_at', todayStart)
-      .lt('created_at', tomorrowStart)
-
-    // Follow-ups (from proposed_actions with follow_up scan_type)
-    const { data: followUpActions } = await supabase
-      .from('proposed_actions')
-      .select('id, status')
-      .eq('workspace_id', workspaceId)
-      .gte('created_at', todayStart)
-      .lt('created_at', tomorrowStart)
-
     const followUpsSent = (followUpActions ?? []).filter((a: { status: string }) => a.status === 'approved').length
     const followUpsDismissed = (followUpActions ?? []).filter((a: { status: string }) => a.status === 'rejected').length
-
-    // Inactive clients today (from proposed_actions)
-    const { data: inactiveActions } = await supabase
-      .from('proposed_actions')
-      .select('id', { count: 'exact', head: true })
-      .eq('workspace_id', workspaceId)
-      .eq('action_type', 'client_update')
-      .gte('created_at', todayStart)
-      .lt('created_at', tomorrowStart)
 
     // Build stats object
     const stats: DailyJournalStats = {
       clients_interacted: uniqueConvs.size,
-      new_clients: (newClients as unknown as { count: number })?.count ?? 0,
-      messages_inbound: (inboundMsgs as unknown as { count: number })?.count ?? 0,
-      messages_outbound: (outboundMsgs as unknown as { count: number })?.count ?? 0,
-      drafts_generated: (draftsGenerated as unknown as { count: number })?.count ?? 0,
+      new_clients: newClientsCount ?? 0,
+      messages_inbound: inboundCount ?? 0,
+      messages_outbound: outboundCount ?? 0,
+      drafts_generated: draftsGeneratedCount ?? 0,
       drafts_sent_as_is: signalCounts.sent_as_is,
       drafts_edited: signalCounts.edited_and_sent,
       drafts_discarded: signalCounts.discarded,
-      bookings_created: (bookingsCreated as unknown as { count: number })?.count ?? 0,
-      bookings_cancelled: (bookingsCancelled as unknown as { count: number })?.count ?? 0,
-      bookings_completed: (bookingsCompleted as unknown as { count: number })?.count ?? 0,
+      bookings_created: bookingsCreatedCount ?? 0,
+      bookings_cancelled: bookingsCancelledCount ?? 0,
+      bookings_completed: bookingsCompletedCount ?? 0,
       follow_ups_sent: followUpsSent,
       follow_ups_dismissed: followUpsDismissed,
-      clients_marked_inactive: (inactiveActions as unknown as { count: number })?.count ?? 0,
+      clients_marked_inactive: inactiveActionsCount ?? 0,
     }
 
     // ─── Learning snapshot ────────────────────────────────────
@@ -901,32 +894,3 @@ async function runScan5_DailyJournal(
   }
 }
 
-// ─── Helper: finalize cron_run_log ──────────────────────────
-
-async function finalizeCronLog(
-  supabase: ReturnType<typeof getSupabaseClient>,
-  runId: string | null,
-  status: 'success' | 'partial_failure' | 'failed',
-  itemsFound: number,
-  itemsActioned: number,
-  workspaceId: string,
-  metadata: Record<string, unknown>
-): Promise<void> {
-  if (!runId) return
-
-  try {
-    await supabase
-      .from('cron_run_log')
-      .update({
-        completed_at: new Date().toISOString(),
-        status,
-        items_found: itemsFound,
-        items_actioned: itemsActioned,
-        metadata,
-        error_details: status === 'failed' ? metadata : null,
-      })
-      .eq('run_id', runId)
-  } catch (err) {
-    console.error('[morning-scan] Failed to finalize cron_run_log:', err)
-  }
-}

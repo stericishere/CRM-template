@@ -31,7 +31,7 @@ export type { ConversationState, ConversationEvent }
  * Complete transition map: state -> event -> next_state
  * 4 states, 9 transitions total (including 3 staff_resolves shortcuts)
  */
-export const TRANSITION_MAP: Record<string, Record<string, string>> = {
+export const TRANSITION_MAP: Record<ConversationState, Partial<Record<ConversationEvent, ConversationState>>> = {
   idle: {
     inbound_message: 'awaiting_staff_review',
   },
@@ -56,9 +56,9 @@ export const TRANSITION_MAP: Record<string, Record<string, string>> = {
  * Throws if the transition is not in TRANSITION_MAP.
  */
 export function getNextState(
-  currentState: string,
-  event: string
-): string {
+  currentState: ConversationState,
+  event: ConversationEvent
+): ConversationState {
   const nextState = TRANSITION_MAP[currentState]?.[event]
   if (!nextState) {
     throw new Error(

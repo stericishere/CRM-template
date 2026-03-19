@@ -159,10 +159,10 @@ export async function sendDraftReply(
     .update({ state: 'awaiting_client_reply' })
     .eq('id', conversationId)
 
-  // 6. Start stale_conversation timer (24h) — fire-and-forget
+  // 6. Start stale_conversation timer (24h) — fire-and-forget (don't await — non-blocking)
   //    If the client doesn't reply within 24h, the timer scanner will
   //    transition the conversation to follow_up_pending.
-  await bestEffortStartTimer(
+  bestEffortStartTimer(
     workspaceId,
     'stale_conversation',
     'conversation',

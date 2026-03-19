@@ -35,6 +35,7 @@
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { getSupabaseClient } from '../_shared/db.ts'
+import { transitionConversation } from '../_shared/conversation-state.ts'
 import type { PendingTimer } from '../_shared/proactive-types.ts'
 
 const MAX_TIMERS = 50
@@ -208,44 +209,7 @@ async function handleStaleConversation(
     return
   }
 
-  // Import transitionConversation dynamically — it may be built in parallel
-  // and may not exist yet. If it doesn't exist, fall back to direct UPDATE.
-  try {
-    const { transitionConversation } = await import('../_shared/conversation-state.ts')
-    await transitionConversation(supabase, timer.target_id, 'timeout_24h', 'timer')
-  } catch {
-    // Fallback: direct state update if conversation-state module not available yet
-    console.warn('[timer-scanner] conversation-state module not available, falling back to direct UPDATE')
-    const { error: updateError } = await supabase
-      .from('conversations')
-      .update({ state: 'follow_up_pending' })
-      .eq('id', timer.target_id)
-      .eq('state', 'awaiting_client_reply')
-
-    if (updateError) {
-      throw new Error(`Failed to transition conversation: ${updateError.message}`)
-    }
-
-    // Write audit event for the transition (fire-and-log)
-    try {
-      await supabase.from('audit_events').insert({
-        workspace_id: timer.workspace_id,
-        actor_type: 'system',
-        actor_id: null,
-        action_type: 'conversation_state_changed',
-        target_type: 'conversation',
-        target_id: timer.target_id,
-        metadata: {
-          from_state: 'awaiting_client_reply',
-          to_state: 'follow_up_pending',
-          event: 'timeout_24h',
-          trigger_source: 'timer',
-        },
-      })
-    } catch (auditErr) {
-      console.error('[timer-scanner] Audit write failed (non-blocking):', auditErr)
-    }
-  }
+  await transitionConversation(timer.target_id, 'timeout_24h', 'timer')
 }
 
 /**

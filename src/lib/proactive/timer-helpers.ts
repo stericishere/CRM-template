@@ -47,7 +47,7 @@ export async function bestEffortStartTimer(
  */
 export async function bestEffortCancelTimer(
   targetId: string,
-  timerType: string,
+  timerType: TimerType,
   reason: string
 ): Promise<void> {
   try {

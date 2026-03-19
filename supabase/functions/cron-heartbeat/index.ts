@@ -34,6 +34,7 @@
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { getSupabaseClient } from '../_shared/db.ts'
+import { createCronRunLog, finalizeCronRunLog } from '../_shared/cron-helpers.ts'
 
 // ─── Configuration ───────────────────────────────────────────
 const BAILEYS_SERVER_URL = Deno.env.get('BAILEYS_SERVER_URL') ?? 'http://localhost:3001'
@@ -394,23 +395,9 @@ function deriveWhatsAppStatus(
 
 serve(async (_req) => {
   const supabase = getSupabaseClient()
-  const startedAt = new Date().toISOString()
 
   // Create cron_run_log entry
-  const { data: runLog, error: runLogError } = await supabase
-    .from('cron_run_log')
-    .insert({
-      job_type: 'heartbeat',
-      started_at: startedAt,
-      status: 'running',
-    })
-    .select('run_id')
-    .single()
-
-  if (runLogError) {
-    console.error('[heartbeat] Failed to create cron_run_log entry:', runLogError.message)
-  }
-  const runId = runLog?.run_id ?? null
+  const runId = await createCronRunLog('heartbeat')
 
   try {
     // 1. Query active workspaces
@@ -421,7 +408,7 @@ serve(async (_req) => {
 
     if (wsError) {
       console.error('[heartbeat] Failed to query workspaces:', wsError.message)
-      await finalizeCronLog(supabase, runId, 'failed', 0, 0, { error: wsError.message })
+      await finalizeCronRunLog(runId, 'failed', 0, 0, { error: wsError.message }, { error: wsError.message })
       return new Response(
         JSON.stringify({ error: 'Failed to query workspaces' }),
         { status: 500 }
@@ -430,7 +417,7 @@ serve(async (_req) => {
 
     if (!workspaces || workspaces.length === 0) {
       console.log('[heartbeat] No active workspaces found')
-      await finalizeCronLog(supabase, runId, 'success', 0, 0, { message: 'No active workspaces' })
+      await finalizeCronRunLog(runId, 'success', 0, 0, { message: 'No active workspaces' })
       return new Response(
         JSON.stringify({ success: true, workspaces: 0 }),
         { status: 200 }
@@ -555,7 +542,7 @@ serve(async (_req) => {
           ? 'partial_failure'
           : 'failed'
 
-    await finalizeCronLog(supabase, runId, finalStatus, totalChecked, totalAlerts, {
+    await finalizeCronRunLog(runId, finalStatus, totalChecked, totalAlerts, {
       workspacesChecked: totalChecked,
       alertsRaised: totalAlerts,
       errors: errors.length > 0 ? errors : undefined,
@@ -579,36 +566,8 @@ serve(async (_req) => {
     )
   } catch (err) {
     console.error('[heartbeat] Fatal error:', err)
-    await finalizeCronLog(supabase, runId, 'failed', 0, 0, { error: String(err) })
+    await finalizeCronRunLog(runId, 'failed', 0, 0, { error: String(err) }, { error: String(err) })
     return new Response(JSON.stringify({ error: String(err) }), { status: 500 })
   }
 })
 
-// ─── Helper: finalize cron_run_log ───────────────────────────
-
-async function finalizeCronLog(
-  supabase: ReturnType<typeof getSupabaseClient>,
-  runId: string | null,
-  status: 'success' | 'partial_failure' | 'failed',
-  itemsFound: number,
-  itemsActioned: number,
-  metadata: Record<string, unknown>
-): Promise<void> {
-  if (!runId) return
-
-  try {
-    await supabase
-      .from('cron_run_log')
-      .update({
-        completed_at: new Date().toISOString(),
-        status,
-        items_found: itemsFound,
-        items_actioned: itemsActioned,
-        metadata,
-        error_details: status === 'failed' ? metadata : null,
-      })
-      .eq('run_id', runId)
-  } catch (err) {
-    console.error('[heartbeat] Failed to finalize cron_run_log:', err)
-  }
-}
