@@ -89,3 +89,15 @@ export type AuditActionType =
   | 'knowledge_updated'
   | 'sop_updated'
   | 'lifecycle_status_updated'
+
+// Re-export Sprint 2 types (F-05, F-06, F-10)
+export type {
+  GlobalContext,
+  MessageContext,
+  ReadOnlyContext,
+  ClientWorkerResult,
+  ProposedAction,
+  ApprovalTier,
+  StaffAction,
+  DraftEditSignalInput,
+} from './sprint2-types.ts'
