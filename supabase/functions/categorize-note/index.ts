@@ -203,6 +203,7 @@ serve(async (req) => {
               type: 'follow_up',
               description: extraction.description,
               dueDate: extraction.due_date,
+              sourceNoteId: note_id,
             },
             status: 'pending',
           }
@@ -219,6 +220,7 @@ serve(async (req) => {
               type: 'promise',
               description: extraction.description,
               dueDate: extraction.due_date,
+              sourceNoteId: note_id,
             },
             status: 'pending',
           }
