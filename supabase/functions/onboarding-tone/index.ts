@@ -64,7 +64,7 @@ serve(async (req) => {
 // ─── Extract mode ────────────────────────────────────────────────────────────
 //
 // extract flow:
-//   1. Read workspace row for business_name, vertical, instagram_scrape_data
+//   1. Read workspace row for business_name, vertical_type, instagram_scrape_data
 //   2. If source='instagram': use scraped captions + bio
 //      If source='description': use provided content string
 //   3. Build prompt → call LLM → parse ToneProfile JSON
@@ -91,7 +91,7 @@ async function handleExtract(
   // Load workspace data for business context
   const { data: workspace, error: wsError } = await supabase
     .from('workspaces')
-    .select('business_name, vertical, instagram_scrape_data')
+    .select('business_name, vertical_type, instagram_scrape_data')
     .eq('id', workspace_id)
     .single()
 
@@ -102,7 +102,7 @@ async function handleExtract(
   }
 
   const businessName = workspace.business_name ?? 'Unknown Business'
-  const vertical = workspace.vertical ?? 'general'
+  const vertical = workspace.vertical_type ?? 'general'
 
   // Build extraction prompt based on source
   const prompt = await buildToneExtractionPrompt({

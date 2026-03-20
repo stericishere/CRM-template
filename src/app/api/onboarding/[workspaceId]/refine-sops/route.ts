@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { refineSopsSchema } from '@/lib/onboarding/schemas'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // POST /api/onboarding/:workspaceId/refine-sops
@@ -21,6 +22,8 @@ export async function POST(
 ) {
   try {
     const { workspaceId } = await params
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     let body: unknown
     try {

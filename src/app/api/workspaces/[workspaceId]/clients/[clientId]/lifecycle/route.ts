@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { lifecycleStatusSchema } from '@/lib/clients/types'
 import * as clientRepo from '@/lib/clients/repository'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // PATCH /api/workspaces/:workspaceId/clients/:clientId/lifecycle
@@ -13,6 +14,9 @@ export async function PATCH(
 ) {
   try {
     const { workspaceId, clientId } = await params
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     let body: unknown
     try {

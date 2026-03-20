@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { startOnboardingSchema } from '@/lib/onboarding/schemas'
 import { getServiceClient } from '@/lib/supabase/service'
+import { createClient } from '@/lib/supabase/server'
 
 // ──────────────────────────────────────────────────────────
 // POST /api/onboarding/start
@@ -15,6 +16,12 @@ import { getServiceClient } from '@/lib/supabase/service'
 // ──────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
   try {
+    const authClient = await createClient()
+    const { data: { user } } = await authClient.auth.getUser()
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
     let body: unknown
     try {
       body = await request.json()

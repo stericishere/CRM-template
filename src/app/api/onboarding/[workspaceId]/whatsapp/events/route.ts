@@ -1,4 +1,5 @@
-import { NextRequest } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // GET /api/onboarding/:workspaceId/whatsapp/events
@@ -20,6 +21,8 @@ export async function GET(
   { params }: { params: Promise<{ workspaceId: string }> }
 ) {
   const { workspaceId } = await params
+  const auth = await assertWorkspaceMember(workspaceId)
+  if (auth instanceof NextResponse) return auth
 
   const encoder = new TextEncoder()
 

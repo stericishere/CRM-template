@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createHmac, randomBytes } from 'crypto'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // GET /api/auth/google-calendar
@@ -14,7 +15,7 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? ''
 const GOOGLE_REDIRECT_URI =
   process.env.GOOGLE_REDIRECT_URI ??
   `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/api/auth/google-calendar/callback`
-const OAUTH_STATE_SECRET = process.env.OAUTH_STATE_SECRET ?? process.env.NEXTAUTH_SECRET ?? ''
+const OAUTH_STATE_SECRET = process.env.OAUTH_STATE_SECRET ?? process.env.NEXTAUTH_SECRET
 
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar.readonly',
@@ -25,12 +26,14 @@ const SCOPES = [
 export function signOAuthState(payload: Record<string, unknown>): string {
   const nonce = randomBytes(16).toString('hex')
   const data = JSON.stringify({ ...payload, nonce })
-  const signature = createHmac('sha256', OAUTH_STATE_SECRET).update(data).digest('hex')
+  // OAUTH_STATE_SECRET is verified non-null by the caller before this is invoked
+  const signature = createHmac('sha256', OAUTH_STATE_SECRET!).update(data).digest('hex')
   return Buffer.from(JSON.stringify({ data, signature })).toString('base64url')
 }
 
 /** Verify and decode a signed OAuth state. Returns null if tampered. */
 export function verifyOAuthState(stateParam: string): Record<string, unknown> | null {
+  if (!OAUTH_STATE_SECRET) return null
   try {
     const { data, signature } = JSON.parse(Buffer.from(stateParam, 'base64url').toString())
     const expected = createHmac('sha256', OAUTH_STATE_SECRET).update(data).digest('hex')
@@ -50,6 +53,10 @@ export async function GET(request: Request) {
       )
     }
 
+    if (!OAUTH_STATE_SECRET) {
+      return NextResponse.json({ error: 'OAuth not configured' }, { status: 500 })
+    }
+
     // Extract workspace_id from query param so we can round-trip it through OAuth state
     const url = new URL(request.url)
     const workspaceId = url.searchParams.get('workspace_id')
@@ -60,6 +67,9 @@ export async function GET(request: Request) {
         { status: 400 }
       )
     }
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     const state = signOAuthState({ workspace_id: workspaceId })
 

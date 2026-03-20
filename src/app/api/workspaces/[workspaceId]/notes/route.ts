@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createNoteSchema } from '@/lib/notes/schemas'
 import { getServiceClient } from '@/lib/supabase/service'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // GET /api/workspaces/:workspaceId/notes
@@ -14,6 +15,10 @@ export async function GET(
 ) {
   try {
     const { workspaceId } = await params
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
+
     const url = request.nextUrl
     const clientId = url.searchParams.get('client_id')
 
@@ -61,6 +66,9 @@ export async function POST(
 ) {
   try {
     const { workspaceId } = await params
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     let body: unknown
     try {

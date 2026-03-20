@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { clientPatchSchema } from '@/lib/clients/types'
 import * as clientRepo from '@/lib/clients/repository'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 type RouteParams = { params: Promise<{ workspaceId: string; clientId: string }> }
 
@@ -13,6 +14,9 @@ export async function GET(
 ) {
   try {
     const { workspaceId, clientId } = await params
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     const client = await clientRepo.getById(workspaceId, clientId)
     if (!client) {
@@ -40,6 +44,9 @@ export async function PATCH(
 ) {
   try {
     const { workspaceId, clientId } = await params
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     let body: unknown
     try {
@@ -82,6 +89,9 @@ export async function DELETE(
 ) {
   try {
     const { workspaceId, clientId } = await params
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     const deleted = await clientRepo.softDelete(workspaceId, clientId)
     if (!deleted) {

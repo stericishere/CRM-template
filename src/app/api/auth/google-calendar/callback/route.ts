@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase/service'
 import { verifyOAuthState } from '../route'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // GET /api/auth/google-calendar/callback
@@ -56,6 +57,13 @@ export async function GET(request: NextRequest) {
       )
     }
     const workspaceId = state.workspace_id as string
+
+    const memberAuth = await assertWorkspaceMember(workspaceId)
+    if (memberAuth instanceof NextResponse) {
+      return NextResponse.redirect(
+        `${APP_URL}/settings?calendar_error=unauthorized`
+      )
+    }
 
     // Exchange authorization code for tokens
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createFollowUpSchema, FOLLOW_UP_STATUSES } from '@/lib/notes/schemas'
 import type { FollowUpStatus } from '@/lib/notes/schemas'
 import { getServiceClient } from '@/lib/supabase/service'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // GET /api/workspaces/:workspaceId/follow-ups
@@ -18,6 +19,10 @@ export async function GET(
 ) {
   try {
     const { workspaceId } = await params
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
+
     const url = request.nextUrl
     const clientId = url.searchParams.get('client_id')
     const statusFilter = url.searchParams.get('status')
@@ -81,6 +86,9 @@ export async function POST(
 ) {
   try {
     const { workspaceId } = await params
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     let body: unknown
     try {
