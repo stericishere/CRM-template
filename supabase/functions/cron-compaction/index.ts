@@ -94,7 +94,7 @@ serve(async (req) => {
       Date.now() - STALE_RUNNING_THRESHOLD_MINUTES * 60 * 1000
     ).toISOString()
 
-    // Only clean up stale compaction runs — don't touch other job types
+    // Only clean up stale compaction runs for THIS workspace
     const { data: staleRuns, error: staleError } = await supabase
       .from('cron_run_log')
       .update({
@@ -104,6 +104,7 @@ serve(async (req) => {
       })
       .eq('status', 'running')
       .eq('job_type', 'compaction')
+      .eq('workspace_id', workspaceId)
       .lt('started_at', staleThreshold)
       .select('run_id')
 

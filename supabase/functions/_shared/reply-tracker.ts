@@ -46,25 +46,11 @@ export async function trackReplySignal(
       return
     }
 
-    let match = signal?.[0] ?? null
+    const match = signal?.[0] ?? null
 
-    // Fallback: if no signal matched this conversation, check for signals
-    // with null conversation_id (pre-Sprint 4 signals that weren't backfilled)
-    if (!match) {
-      const { data: fallback } = await supabase
-        .from('draft_edit_signals')
-        .select('id, created_at, conversation_id')
-        .eq('workspace_id', workspaceId)
-        .is('conversation_id', null)
-        .is('client_replied', null)
-        .in('staff_action', ['sent_as_is', 'edited_and_sent'])
-        .gte('created_at', cutoff)
-        .order('created_at', { ascending: false })
-        .limit(1)
-
-      match = fallback?.[0] ?? null
-    }
-
+    // No fallback to null-conversation signals — matching an arbitrary
+    // legacy signal would corrupt reply-rate metrics. Legacy signals
+    // with null conversation_id will expire via the 72h observation closer.
     if (!match) {
       return
     }

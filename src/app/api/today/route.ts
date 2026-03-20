@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
     const [bookingsResult, actionsResult, statsResult] = await Promise.all([
       fetchTodayBookings(supabase, workspaceId, todayStart),
       fetchPendingActions(supabase, workspaceId),
-      fetchStats(supabase, workspaceId),
+      fetchStats(supabase, workspaceId, todayStart.dateStr),
     ])
 
     if (bookingsResult.error) {
@@ -166,21 +166,19 @@ function getTodayBounds(timezone?: string): TodayBounds {
   const parts = probeFmt.formatToParts(probe)
   const get = (type: string) => parseInt(parts.find(p => p.type === type)?.value ?? '0', 10)
 
-  const probeLocalDay = get('day')
-  const probeUtcDay = probe.getUTCDate()
-  let offsetHours = get('hour')
-  const offsetMinutes = get('minute')
+  // Compute offset by reconstructing the local time as a UTC timestamp
+  // and comparing to the actual UTC timestamp of the probe.
+  // This avoids day-of-month comparison which breaks on month boundaries.
+  const localYear = get('year')
+  const localMonth = get('month') - 1
+  const localDay = get('day')
+  const localHour = get('hour')
+  const localMinute = get('minute')
 
-  // If the local day is ahead of UTC day, the timezone is positive (east)
-  // If behind, it's negative (west)
-  if (probeLocalDay > probeUtcDay) {
-    // positive offset, offsetHours is correct
-  } else if (probeLocalDay < probeUtcDay) {
-    // negative offset: e.g., formatted as 19:00 on previous day = -5h
-    offsetHours = offsetHours - 24
-  }
-
-  const totalOffsetMs = (offsetHours * 60 + offsetMinutes) * 60 * 1000
+  // Interpret the formatted local time as if it were UTC
+  const localAsUtcMs = Date.UTC(localYear, localMonth, localDay, localHour, localMinute, 0)
+  // The difference is the timezone offset
+  const totalOffsetMs = localAsUtcMs - probe.getTime()
 
   // Local midnight in UTC = probe (dateStr midnight UTC) - offset
   const startMs = probe.getTime() - totalOffsetMs
@@ -263,7 +261,7 @@ async function fetchPendingActions(supabase: any, workspaceId: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped service client
-async function fetchStats(supabase: any, workspaceId: string) {
+async function fetchStats(supabase: any, workspaceId: string, todayDateStr?: string) {
   // 3 count queries in parallel
   const [pendingActions, overdueFollowUps, unreadMessages] = await Promise.all([
     supabase
@@ -277,7 +275,7 @@ async function fetchStats(supabase: any, workspaceId: string) {
       .select('id', { count: 'exact', head: true })
       .eq('workspace_id', workspaceId)
       .eq('status', 'open')
-      .lt('due_date', new Date().toISOString().slice(0, 10)),
+      .lt('due_date', todayDateStr ?? new Date().toISOString().slice(0, 10)),
 
     supabase
       .from('messages')
