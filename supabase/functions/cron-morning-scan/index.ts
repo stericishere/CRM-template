@@ -108,6 +108,7 @@ serve(async (req) => {
       const { data: closedSignals, error: closeError } = await supabase
         .from('draft_edit_signals')
         .update({ client_replied: false })
+        .eq('workspace_id', workspaceId)
         .is('client_replied', null)
         .lt('created_at', new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString())
         .select('id')

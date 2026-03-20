@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase/service'
+import { createClient } from '@/lib/supabase/server'
 
 // ──────────────────────────────────────────────────────────
 // GET /api/today?workspace_id=xxx
@@ -38,6 +39,22 @@ export async function GET(request: NextRequest) {
         { error: 'workspace_id query parameter is required' },
         { status: 400 }
       )
+    }
+
+    // Verify the authenticated user belongs to this workspace
+    const authClient = await createClient()
+    const { data: { user } } = await authClient.auth.getUser()
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+    const { data: staffRow } = await authClient
+      .from('staff')
+      .select('id')
+      .eq('id', user.id)
+      .eq('workspace_id', workspaceId)
+      .maybeSingle()
+    if (!staffRow) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped service client
@@ -109,30 +126,54 @@ interface TodayBounds {
 
 function getTodayBounds(timezone?: string): TodayBounds {
   const tz = timezone ?? 'UTC'
+  const now = new Date()
+
   // Get today's date string in the workspace's timezone
-  const formatter = new Intl.DateTimeFormat('en-CA', {
+  const dateFmt = new Intl.DateTimeFormat('en-CA', {
     timeZone: tz,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   })
-  const dateStr = formatter.format(new Date())
+  const dateStr = dateFmt.format(now)
 
-  // Build timezone-aware start/end of day by computing UTC offset
-  // For bookings stored as TIMESTAMPTZ, Postgres compares in UTC,
-  // so we need the UTC equivalent of "midnight local" and "end of day local"
-  const localMidnight = new Date(`${dateStr}T00:00:00`)
-  const utcMidnight = new Date(`${dateStr}T00:00:00Z`)
-  // Rough offset: diff between what JS thinks localMidnight is vs UTC midnight
-  // Better: use Intl to get the actual offset
-  const offsetMs = localMidnight.getTime() - utcMidnight.getTime()
-  const startUtc = new Date(utcMidnight.getTime() - offsetMs)
-  const endUtc = new Date(startUtc.getTime() + 24 * 60 * 60 * 1000 - 1)
+  // Compute the UTC offset for this timezone using Intl.DateTimeFormat
+  // by comparing formatted local time parts against UTC
+  const partsFmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+  const parts = partsFmt.formatToParts(now)
+  const get = (type: string) => parseInt(parts.find(p => p.type === type)?.value ?? '0', 10)
+
+  // Build a Date representing "midnight local" in the workspace timezone
+  // by computing the offset between local and UTC representations
+  const localYear = get('year')
+  const localMonth = get('month') - 1
+  const localDay = get('day')
+
+  // Create midnight in the workspace's local date as if it were UTC,
+  // then adjust by the timezone offset
+  const midnightAsUtc = Date.UTC(localYear, localMonth, localDay, 0, 0, 0)
+  const nowUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(),
+    now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds())
+  const localNowMs = Date.UTC(localYear, localMonth, localDay, get('hour'), get('minute'), get('second'))
+  const offsetMs = localNowMs - nowUtc
+
+  // Midnight local in UTC = midnight_as_utc - offset
+  const startMs = midnightAsUtc - offsetMs
+  const endMs = startMs + 24 * 60 * 60 * 1000 - 1
 
   return {
     dateStr,
-    startISO: startUtc.toISOString(),
-    endISO: endUtc.toISOString(),
+    startISO: new Date(startMs).toISOString(),
+    endISO: new Date(endMs).toISOString(),
   }
 }
 
@@ -140,7 +181,7 @@ function getTodayBounds(timezone?: string): TodayBounds {
 async function fetchTodayBookings(supabase: any, workspaceId: string, today: TodayBounds) {
   const { data, error } = await supabase
     .from('bookings')
-    .select('id, appointment_type, start_time, end_time, status, client_id, clients(name)')
+    .select('id, appointment_type, start_time, end_time, status, client_id, clients(full_name)')
     .eq('workspace_id', workspaceId)
     .gte('start_time', today.startISO)
     .lte('start_time', today.endISO)
@@ -148,7 +189,7 @@ async function fetchTodayBookings(supabase: any, workspaceId: string, today: Tod
 
   if (error) return { data: null, error }
 
-  // Flatten the join: clients(name) -> client_name
+  // Flatten the join: clients(full_name) -> client_name
   interface BookingRow {
     id: string
     appointment_type: string
@@ -156,12 +197,12 @@ async function fetchTodayBookings(supabase: any, workspaceId: string, today: Tod
     end_time: string
     status: string
     client_id: string
-    clients: { name: string } | null
+    clients: { full_name: string | null } | null
   }
 
   const bookings = (data as BookingRow[]).map((b) => ({
     id: b.id,
-    client_name: b.clients?.name ?? 'Unknown',
+    client_name: b.clients?.full_name ?? 'Unknown',
     appointment_type: b.appointment_type,
     start_time: b.start_time,
     end_time: b.end_time,
@@ -175,7 +216,7 @@ async function fetchTodayBookings(supabase: any, workspaceId: string, today: Tod
 async function fetchPendingActions(supabase: any, workspaceId: string) {
   const { data, error } = await supabase
     .from('proposed_actions')
-    .select('id, action_type, summary, urgency_score, rank, client_id, clients(name)')
+    .select('id, action_type, summary, urgency_score, rank, client_id, clients(full_name)')
     .eq('workspace_id', workspaceId)
     .eq('status', 'pending')
     .order('urgency_score', { ascending: false, nullsFirst: false })
@@ -190,7 +231,7 @@ async function fetchPendingActions(supabase: any, workspaceId: string) {
     urgency_score: number | null
     rank: number | null
     client_id: string
-    clients: { name: string } | null
+    clients: { full_name: string | null } | null
   }
 
   const actions = (data as ActionRow[]).map((a) => ({
@@ -199,7 +240,7 @@ async function fetchPendingActions(supabase: any, workspaceId: string) {
     summary: a.summary,
     urgency_score: a.urgency_score,
     rank: a.rank,
-    client_name: a.clients?.name ?? 'Unknown',
+    client_name: a.clients?.full_name ?? 'Unknown',
   }))
 
   return { data: actions, error: null }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
 import { getServiceClient } from '@/lib/supabase/service'
 import {
   daysParam,
@@ -29,6 +30,22 @@ export async function GET(
 ) {
   try {
     const { workspaceId } = await params
+
+    // Verify workspace membership
+    const authClient = await createClient()
+    const { data: { user } } = await authClient.auth.getUser()
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+    const { data: staffRow } = await authClient
+      .from('staff')
+      .select('id')
+      .eq('id', user.id)
+      .eq('workspace_id', workspaceId)
+      .maybeSingle()
+    if (!staffRow) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
 
     // Parse & validate days param
     const rawDays = request.nextUrl.searchParams.get('days')
