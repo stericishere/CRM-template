@@ -1,9 +1,9 @@
-// global-context/index.ts
-// Router — assembles GlobalContext from individual context modules
+// context-builders/index.ts
+// Assembles GlobalContext from individual context modules
 //
 // ┌──────────────┐  ┌───────────┐  ┌───────────┐
-// │ BUSINESS.md  │  │  AGENT    │  │  TOOLS    │
-// │ (identity)   │  │ (SOPs)    │  │ (config)  │
+// │  IDENTITY    │  │  AGENT    │  │  TOOLS    │
+// │ (business)   │  │ (SOPs)    │  │ (config)  │
 // └──────┬───────┘  └─────┬─────┘  └─────┬─────┘
 //        │                │              │
 //        v                v              v
@@ -14,7 +14,7 @@
 //  │  └──────────┘  └────────┘  └───────────┘   │
 //  └─────────────────────────────────────────────┘
 
-import type { GlobalContext } from '../supabase/functions/_shared/sprint2-types.ts'
+import type { GlobalContext } from '../sprint2-types.ts'
 import { buildIdentity } from './identity.ts'
 import { buildAgentConfig } from './agent.ts'
 import { buildToolsConfig } from './tools.ts'

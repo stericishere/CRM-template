@@ -70,8 +70,8 @@ export async function invokeClientWorker(
 
   const session = { workspaceId, clientId, conversationId }
 
-  // Build system prompt from GlobalContext (workspace-level, cacheable)
-  const systemPrompt = composeSystemPrompt(context)
+  // Build system prompt from GlobalContext + global-context/*.md templates (workspace-level, cacheable)
+  const systemPrompt = await composeSystemPrompt(context)
 
   const calendarConnected = context.tools.calendarConnected
   const tools = buildToolDefinitions(toolRegistry, { calendarConnected })

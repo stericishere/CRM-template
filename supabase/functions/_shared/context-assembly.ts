@@ -22,7 +22,7 @@ import type {
   NoteContext,
   InboundMessage,
 } from './sprint2-types.ts'
-import { buildGlobalContext } from '../../../global-context/index.ts'
+import { buildGlobalContext } from './context-builders/index.ts'
 import { searchKnowledge } from './knowledge-search.ts'
 
 export async function assembleContext(

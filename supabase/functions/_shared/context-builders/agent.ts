@@ -1,9 +1,9 @@
-// global-context/agent.ts
+// context-builders/agent.ts
 // AGENT — behavior rules, SOPs, intent taxonomy, custom fields
 // Defines what the agent can do and how it should behave
 
-import type { AgentConfig } from '../supabase/functions/_shared/sprint2-types.ts'
-import { INTENT_TAXONOMY } from '../supabase/functions/_shared/sprint2-types.ts'
+import type { AgentConfig } from '../sprint2-types.ts'
+import { INTENT_TAXONOMY } from '../sprint2-types.ts'
 
 interface VerticalConfig {
   customFields: Array<{ name: string; description: string }>
@@ -27,8 +27,8 @@ function parseVerticalConfig(config: unknown): VerticalConfig {
   }
   const c = config as Record<string, unknown>
   return {
-    customFields: Array.isArray(c.customFields) ? c.customFields : [],
-    appointmentTypes: Array.isArray(c.appointmentTypes) ? c.appointmentTypes : [],
-    sopRules: Array.isArray(c.sopRules) ? c.sopRules : [],
+    customFields: Array.isArray(c.custom_fields) ? c.custom_fields : [],
+    appointmentTypes: Array.isArray(c.appointment_types) ? c.appointment_types : [],
+    sopRules: Array.isArray(c.sop_rules) ? c.sop_rules : [],
   }
 }

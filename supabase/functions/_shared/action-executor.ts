@@ -83,14 +83,15 @@ async function executeBookingCreate(
     .single()
 
   const verticalConfig = workspace?.vertical_config as Record<string, unknown> | null
-  const appointmentTypes = Array.isArray(verticalConfig?.appointmentTypes)
-    ? (verticalConfig.appointmentTypes as Array<{ name: string; durationMinutes?: number }>)
+  // JSONB stores snake_case keys (from onboarding SOP generation)
+  const appointmentTypes = Array.isArray(verticalConfig?.appointment_types)
+    ? (verticalConfig.appointment_types as Array<{ name: string; duration_minutes?: number }>)
     : []
 
   const serviceConfig = appointmentTypes.find(
     t => t.name.toLowerCase() === appointmentType.toLowerCase()
   )
-  const durationMinutes = serviceConfig?.durationMinutes ?? 60 // default 60 min
+  const durationMinutes = serviceConfig?.duration_minutes ?? 60 // default 60 min
 
   // Compute end_time from start_time + duration
   const startDate = new Date(startTime)

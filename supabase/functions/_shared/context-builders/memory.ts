@@ -1,8 +1,8 @@
-// global-context/memory.ts
+// context-builders/memory.ts
 // MEMORY — learned patterns from past interactions
 // Communication rules promoted from learning signals
 
-import type { AgentMemory, CommunicationRule } from '../supabase/functions/_shared/sprint2-types.ts'
+import type { AgentMemory, CommunicationRule } from '../sprint2-types.ts'
 
 export function buildAgentMemory(workspace: Record<string, unknown>): AgentMemory {
   return {

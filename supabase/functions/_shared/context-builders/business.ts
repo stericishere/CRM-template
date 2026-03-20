@@ -1,8 +1,8 @@
-// global-context/business.ts
+// context-builders/business.ts
 // Business Context — hours, timezone, scheduling, reminders
 // Operational details that affect how the agent handles time-sensitive requests
 
-import type { BusinessContext } from '../supabase/functions/_shared/sprint2-types.ts'
+import type { BusinessContext } from '../sprint2-types.ts'
 
 export function buildBusinessContext(workspace: Record<string, unknown>): BusinessContext {
   return {

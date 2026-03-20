@@ -37,6 +37,8 @@ import { callLLM, FLASH_MODEL } from '../_shared/llm-client.ts'
 const COMPACTION_SYSTEM_PROMPT = `You are a memory compaction assistant. Merge the existing client summary with new messages into a concise third-person factual summary (~2000 tokens). Priority: preferences > milestones > unresolved topics > communication style > interaction history. Preserve all actionable information. Drop redundant small talk.`
 
 const COMPACTION_MAX_TOKENS = 2048
+const MESSAGE_TRUNCATION_LIMIT = 200
+const STALE_RUNNING_THRESHOLD_MINUTES = 30
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -84,6 +86,40 @@ serve(async (req) => {
   // Create cron_run_log entry
   const runId = await createCronRunLog('compaction', workspaceId)
 
+  // ─── Stale 'running' cleanup ────────────────────────────────
+  // Any cron_run_logs stuck in 'running' for >30 min are likely orphaned.
+  // Mark them 'failed' so they don't block monitoring/alerting.
+  try {
+    const staleThreshold = new Date(
+      Date.now() - STALE_RUNNING_THRESHOLD_MINUTES * 60 * 1000
+    ).toISOString()
+
+    // Only clean up stale compaction runs for THIS workspace
+    const { data: staleRuns, error: staleError } = await supabase
+      .from('cron_run_log')
+      .update({
+        status: 'failed',
+        completed_at: new Date().toISOString(),
+        error_details: { reason: 'stale_running_cleanup', threshold_minutes: STALE_RUNNING_THRESHOLD_MINUTES },
+      })
+      .eq('status', 'running')
+      .eq('job_type', 'compaction')
+      .eq('workspace_id', workspaceId)
+      .lt('started_at', staleThreshold)
+      .select('run_id')
+
+    if (staleError) {
+      console.warn('[compaction] Failed to clean up stale running logs:', staleError.message)
+    } else if (staleRuns && staleRuns.length > 0) {
+      console.log(
+        `[compaction] [${workspaceId}] Cleaned up ${staleRuns.length} stale 'running' cron_run_log(s)`
+      )
+    }
+  } catch (cleanupErr) {
+    // Cleanup failure is non-fatal — proceed with compaction
+    console.warn('[compaction] Stale running cleanup error (non-fatal):', cleanupErr)
+  }
+
   try {
     // 1. Query clients with message activity yesterday
     //    Uses raw SQL via RPC because we need a date cast + DISTINCT + JOIN
@@ -117,21 +153,28 @@ serve(async (req) => {
         )
       }
 
-      // For each conversation, check if there are messages from yesterday
+      // Batch query: find conversations with yesterday's messages in one query
       const yesterday = getYesterdayDateString()
+      const conversationIds = conversations.map((c) => c.id)
+      const clientByConv = new Map(conversations.map((c) => [c.id, c.client_id]))
       const clientIdSet = new Set<string>()
 
-      for (const conv of conversations) {
+      // Query in batches of 200 to stay within PostgREST limits
+      const BATCH_SIZE = 200
+      for (let i = 0; i < conversationIds.length; i += BATCH_SIZE) {
+        const batch = conversationIds.slice(i, i + BATCH_SIZE)
         const { data: msgs, error: msgError } = await supabase
           .from('messages')
-          .select('id')
-          .eq('conversation_id', conv.id)
+          .select('conversation_id')
+          .in('conversation_id', batch)
           .gte('created_at', `${yesterday}T00:00:00.000Z`)
           .lt('created_at', `${getTodayDateString()}T00:00:00.000Z`)
-          .limit(1)
 
-        if (!msgError && msgs && msgs.length > 0) {
-          clientIdSet.add(conv.client_id)
+        if (!msgError && msgs) {
+          for (const m of msgs) {
+            const cid = clientByConv.get(m.conversation_id)
+            if (cid) clientIdSet.add(cid)
+          }
         }
       }
 
@@ -282,36 +325,19 @@ async function compactClient(
 
   const newVersion = (existingSummary?.version ?? 0) + 1
 
-  // 2e. INSERT new memories record
-  const { error: memoryError } = await supabase.from('memories').insert({
-    workspace_id: workspaceId,
-    client_id: clientId,
-    type: 'compact_summary',
-    content: newSummary,
-    version: newVersion,
-    period_date: getYesterdayDateString(),
+  // 2e. Atomic write: INSERT memory + UPDATE client in a single RPC call.
+  //     write_compaction_result does both in a transaction so they can't diverge.
+  const { error: rpcError } = await supabase.rpc('write_compaction_result', {
+    p_workspace_id: workspaceId,
+    p_client_id: clientId,
+    p_memory_type: 'compact_summary',
+    p_memory_content: newSummary,
+    p_period_date: getYesterdayDateString(),
+    p_client_summary: newSummary,
   })
 
-  if (memoryError) {
-    throw new Error(`Failed to insert memory: ${memoryError.message}`)
-  }
-
-  // 2f. UPDATE clients.summary and clients.last_compacted_at
-  const { error: clientUpdateError } = await supabase
-    .from('clients')
-    .update({
-      summary: newSummary,
-      last_compacted_at: new Date().toISOString(),
-    })
-    .eq('id', clientId)
-
-  if (clientUpdateError) {
-    // Non-fatal: the memory was saved, but client summary wasn't updated.
-    // Next compaction will pick up the latest memory version anyway.
-    console.error(
-      `[compaction] [${workspaceId}] Failed to update client summary for ${clientId}:`,
-      clientUpdateError.message
-    )
+  if (rpcError) {
+    throw new Error(`write_compaction_result RPC failed: ${rpcError.message}`)
   }
 
   console.log(
@@ -371,6 +397,7 @@ async function loadLatestCompactSummary(
     .eq('workspace_id', workspaceId)
     .eq('client_id', clientId)
     .eq('type', 'compact_summary')
+    .order('period_date', { ascending: false })
     .order('version', { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -404,21 +431,67 @@ async function loadYesterdayMessages(
     return []
   }
 
-  // Get yesterday's messages
-  const { data: messages, error: msgError } = await supabase
+  // Get yesterday's messages (count first to detect truncation)
+  const { count: totalCount, error: countError } = await supabase
     .from('messages')
-    .select('content, direction, sender_type, created_at')
+    .select('id', { count: 'exact', head: true })
     .eq('conversation_id', conv.id)
     .gte('created_at', `${yesterday}T00:00:00.000Z`)
     .lt('created_at', `${today}T00:00:00.000Z`)
-    .order('created_at', { ascending: true })
 
-  if (msgError) {
-    console.warn('[compaction] Failed to load yesterday messages:', msgError.message)
-    return []
+  if (countError) {
+    console.warn('[compaction] Failed to count yesterday messages:', countError.message)
+    // Fall through — still try to load messages
   }
 
-  return (messages ?? []) as MessageRow[]
+  if (totalCount !== null && totalCount > MESSAGE_TRUNCATION_LIMIT) {
+    console.warn(
+      `[compaction] Client has ${totalCount} messages yesterday (limit ${MESSAGE_TRUNCATION_LIMIT}). ` +
+      `Only using last ${MESSAGE_TRUNCATION_LIMIT} for compaction.`
+    )
+  }
+
+  // Query messages, ordered ascending. If truncated, take the most recent N
+  // by ordering DESC with limit, then reversing.
+  const needsTruncation = totalCount !== null && totalCount > MESSAGE_TRUNCATION_LIMIT
+
+  let messages: MessageRow[]
+
+  if (needsTruncation) {
+    // Fetch last MESSAGE_TRUNCATION_LIMIT messages (most recent first), then reverse
+    const { data: descMessages, error: msgError } = await supabase
+      .from('messages')
+      .select('content, direction, sender_type, created_at')
+      .eq('conversation_id', conv.id)
+      .gte('created_at', `${yesterday}T00:00:00.000Z`)
+      .lt('created_at', `${today}T00:00:00.000Z`)
+      .order('created_at', { ascending: false })
+      .limit(MESSAGE_TRUNCATION_LIMIT)
+
+    if (msgError) {
+      console.warn('[compaction] Failed to load yesterday messages:', msgError.message)
+      return []
+    }
+
+    messages = ((descMessages ?? []) as MessageRow[]).reverse()
+  } else {
+    const { data: ascMessages, error: msgError } = await supabase
+      .from('messages')
+      .select('content, direction, sender_type, created_at')
+      .eq('conversation_id', conv.id)
+      .gte('created_at', `${yesterday}T00:00:00.000Z`)
+      .lt('created_at', `${today}T00:00:00.000Z`)
+      .order('created_at', { ascending: true })
+
+    if (msgError) {
+      console.warn('[compaction] Failed to load yesterday messages:', msgError.message)
+      return []
+    }
+
+    messages = (ascMessages ?? []) as MessageRow[]
+  }
+
+  return messages
 }
 
 // ─── Date helpers ───────────────────────────────────────────
