@@ -1,5 +1,7 @@
-// Prompt loader: reads the markdown prompt from global-context/prompts/
-// Source of truth: global-context/prompts/tone-extraction.md
+// Prompt loader: reads the markdown prompt from global-context/
+// Source of truth: global-context/tone-extraction.md
+
+import { loadMarkdownSection } from '../markdown-loader.ts'
 
 export interface ToneExtractionInput {
   source: 'instagram' | 'description'
@@ -12,23 +14,11 @@ export interface ToneExtractionInput {
   vertical: string
 }
 
-let _systemPrompt: string | null = null
-
-async function loadSystemPrompt(): Promise<string> {
-  if (_systemPrompt) return _systemPrompt
-  const md = await Deno.readTextFile(
-    new URL('../../../../global-context/prompts/tone-extraction.md', import.meta.url)
-  )
-  const match = md.match(/## System Prompt\n\n([\s\S]*?)(?=\n## )/m)
-  _systemPrompt = match?.[1]?.trim() ?? ''
-  return _systemPrompt
-}
-
 export async function buildToneExtractionPrompt(input: ToneExtractionInput): Promise<{
   system: string
   user: string
 }> {
-  const system = await loadSystemPrompt()
+  const system = await loadMarkdownSection('tone-extraction.md', 'System Prompt')
 
   let user: string
 

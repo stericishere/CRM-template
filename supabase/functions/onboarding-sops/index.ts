@@ -97,7 +97,7 @@ async function handleGenerate(
   })
 
   const raw = result.message.content ?? ''
-  const verticalConfig = validateVerticalConfig(parseJsonResponse<VerticalConfig>(raw))
+  const verticalConfig = validateVerticalConfig(parseJsonFromLLM<VerticalConfig>(raw, 'onboarding-sops'))
 
   // Persist to workspace
   const { error: updateError } = await supabase
@@ -150,7 +150,7 @@ async function handleRefine(
   })
 
   const raw = result.message.content ?? ''
-  const verticalConfig = parseJsonFromLLM<VerticalConfig>(raw, 'onboarding-sops')
+  const verticalConfig = validateVerticalConfig(parseJsonFromLLM<VerticalConfig>(raw, 'onboarding-sops'))
 
   // Persist updated config
   const { error: updateError } = await supabase

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase/service'
+import { createClient } from '@/lib/supabase/server'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? ''
@@ -49,6 +50,22 @@ export async function POST(request: NextRequest) {
         { error: 'workspace_id is required' },
         { status: 400 }
       )
+    }
+
+    // Verify the authenticated user belongs to this workspace
+    const authClient = await createClient()
+    const { data: { user } } = await authClient.auth.getUser()
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+    const { data: staffRow } = await authClient
+      .from('staff')
+      .select('id')
+      .eq('id', user.id)
+      .eq('workspace_id', workspaceId)
+      .maybeSingle()
+    if (!staffRow) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {

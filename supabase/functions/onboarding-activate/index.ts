@@ -110,6 +110,7 @@ serve(async (req) => {
       .from('workspaces')
       .update({ onboarding_status: 'complete' })
       .eq('id', workspace_id)
+      .neq('onboarding_status', 'complete')
 
     if (updateError) {
       console.error('[onboarding-activate] Failed to update status:', updateError.message)

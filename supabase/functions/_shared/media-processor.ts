@@ -87,8 +87,18 @@ export async function processMedia(
         language: result.language,
       })
 
+      const MAX_TRANSCRIPTION_CHARS = 8000
+      const safeText = result.text.slice(0, MAX_TRANSCRIPTION_CHARS)
+      if (result.text.length > MAX_TRANSCRIPTION_CHARS) {
+        console.warn('[media] Transcription truncated:', {
+          messageId,
+          originalLength: result.text.length,
+          truncatedTo: MAX_TRANSCRIPTION_CHARS,
+        })
+      }
+
       return {
-        transcription: result.text,
+        transcription: safeText,
         media_metadata: {
           type: mediaType,
           duration_seconds: result.duration_seconds,

@@ -150,21 +150,28 @@ serve(async (req) => {
         )
       }
 
-      // For each conversation, check if there are messages from yesterday
+      // Batch query: find conversations with yesterday's messages in one query
       const yesterday = getYesterdayDateString()
+      const conversationIds = conversations.map((c) => c.id)
+      const clientByConv = new Map(conversations.map((c) => [c.id, c.client_id]))
       const clientIdSet = new Set<string>()
 
-      for (const conv of conversations) {
+      // Query in batches of 200 to stay within PostgREST limits
+      const BATCH_SIZE = 200
+      for (let i = 0; i < conversationIds.length; i += BATCH_SIZE) {
+        const batch = conversationIds.slice(i, i + BATCH_SIZE)
         const { data: msgs, error: msgError } = await supabase
           .from('messages')
-          .select('id')
-          .eq('conversation_id', conv.id)
+          .select('conversation_id')
+          .in('conversation_id', batch)
           .gte('created_at', `${yesterday}T00:00:00.000Z`)
           .lt('created_at', `${getTodayDateString()}T00:00:00.000Z`)
-          .limit(1)
 
-        if (!msgError && msgs && msgs.length > 0) {
-          clientIdSet.add(conv.client_id)
+        if (!msgError && msgs) {
+          for (const m of msgs) {
+            const cid = clientByConv.get(m.conversation_id)
+            if (cid) clientIdSet.add(cid)
+          }
         }
       }
 
@@ -320,9 +327,10 @@ async function compactClient(
   const { error: rpcError } = await supabase.rpc('write_compaction_result', {
     p_workspace_id: workspaceId,
     p_client_id: clientId,
-    p_summary: newSummary,
-    p_version: newVersion,
+    p_memory_type: 'compact_summary',
+    p_memory_content: newSummary,
     p_period_date: getYesterdayDateString(),
+    p_client_summary: newSummary,
   })
 
   if (rpcError) {
@@ -386,6 +394,7 @@ async function loadLatestCompactSummary(
     .eq('workspace_id', workspaceId)
     .eq('client_id', clientId)
     .eq('type', 'compact_summary')
+    .order('period_date', { ascending: false })
     .order('version', { ascending: false })
     .limit(1)
     .maybeSingle()

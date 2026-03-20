@@ -1,5 +1,7 @@
-// Prompt loader: reads the markdown prompt from global-context/prompts/
-// Source of truth: global-context/prompts/deep-research-sop.md
+// Prompt loader: reads the markdown prompt from global-context/
+// Source of truth: global-context/deep-research-sop.md
+
+import { loadMarkdownSection } from '../markdown-loader.ts'
 
 export interface DeepResearchSopInput {
   vertical: string
@@ -8,23 +10,11 @@ export interface DeepResearchSopInput {
   knowledge_base?: string
 }
 
-let _systemPrompt: string | null = null
-
-async function loadSystemPrompt(): Promise<string> {
-  if (_systemPrompt) return _systemPrompt
-  const md = await Deno.readTextFile(
-    new URL('../../../../global-context/prompts/deep-research-sop.md', import.meta.url)
-  )
-  const match = md.match(/## System Prompt\n\n([\s\S]*?)(?=\n## )/m)
-  _systemPrompt = match?.[1]?.trim() ?? ''
-  return _systemPrompt
-}
-
 export async function buildDeepResearchSopPrompt(input: DeepResearchSopInput): Promise<{
   system: string
   user: string
 }> {
-  const system = await loadSystemPrompt()
+  const system = await loadMarkdownSection('deep-research-sop.md', 'System Prompt')
 
   let userContent = `Business name: ${input.business_name}
 Vertical: ${input.vertical}`

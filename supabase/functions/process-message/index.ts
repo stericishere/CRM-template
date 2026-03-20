@@ -53,6 +53,7 @@ import { saveDraft, logLLMUsage } from '../_shared/draft-persistence.ts'
 import { estimateCost, PRO_MODEL } from '../_shared/llm-client.ts'
 import { bestEffortCancelTimer } from '../_shared/timer-helpers.ts'
 import { processMedia } from '../_shared/media-processor.ts'
+import { trackReplySignal } from '../_shared/reply-tracker.ts'
 
 // VT raised to 120s to give the LLM pipeline time to complete before
 // the message becomes visible again for retry.
@@ -195,6 +196,12 @@ serve(async (_req) => {
       'stale_conversation',
       'client_messaged'
     )
+
+    // -------------------------------------------------------------------------
+    // 4c. Reply tracking — backfill draft_edit_signals when client replies
+    //     Fire-and-forget: never blocks processing
+    // -------------------------------------------------------------------------
+    await trackReplySignal(supabase, payload.conversation_id, payload.workspace_id)
 
     // -------------------------------------------------------------------------
     // 5. Idempotency check: skip if this specific message was already processed.

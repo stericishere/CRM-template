@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase/service'
+import { verifyOAuthState } from '../route'
 
 // ──────────────────────────────────────────────────────────
 // GET /api/auth/google-calendar/callback
@@ -46,17 +47,15 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    // Decode state to get workspace_id
-    let workspaceId: string
-    try {
-      const state = JSON.parse(Buffer.from(stateParam, 'base64url').toString())
-      workspaceId = state.workspace_id
-      if (!workspaceId) throw new Error('No workspace_id in state')
-    } catch {
+    // Verify HMAC-signed state to prevent CSRF / workspace_id tampering
+    const state = verifyOAuthState(stateParam)
+    if (!state || !state.workspace_id) {
+      console.error('[GET /auth/google-calendar/callback] Invalid or tampered OAuth state')
       return NextResponse.redirect(
         `${APP_URL}/settings?calendar_error=invalid_state`
       )
     }
+    const workspaceId = state.workspace_id as string
 
     // Exchange authorization code for tokens
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {

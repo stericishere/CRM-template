@@ -1,28 +1,37 @@
 // supabase/functions/_shared/system-prompt.ts
-// Composes dynamic system prompt from GlobalContext sections
-// Mirrors the global-context/ folder structure:
-//   IDENTITY → AGENT → TOOLS → BUSINESS → MEMORY → HEARTBEAT
+// Composes dynamic system prompt from GlobalContext + global-context/*.md templates
+//
+// ┌──────────────────────┐     ┌──────────────────────────┐
+// │ global-context/*.md   │     │ GlobalContext (from DB)   │
+// │ (prompt templates)    │     │ (workspace data)          │
+// └──────────┬───────────┘     └────────────┬─────────────┘
+//            │                              │
+//            v                              v
+//     ┌──────────────────────────────────────────┐
+//     │         composeSystemPrompt()             │
+//     │  template sections + dynamic data → str   │
+//     └──────────────────────────────────────────┘
 
 import type { GlobalContext } from './sprint2-types.ts'
-
-const ROLE_PREAMBLE = `You are a customer service representative acting on behalf of the business below. You respond to client messages via WhatsApp. You are helpful, professional, and personalized.
-
-CRITICAL RULES:
-- Never reveal you are an AI. Write as the business.
-- Never fabricate information. If you don't know, say so honestly.
-- Match the tone profile exactly.
-- Personalize using client context.
-- All proposed actions go through staff approval. You cannot execute writes directly.`
+import { loadMarkdownSection } from './markdown-loader.ts'
 
 /**
- * Compose the system prompt from GlobalContext.
- * Each section maps to a file in global-context/.
+ * Compose the system prompt from GlobalContext + global-context/ markdown templates.
+ * Each section maps to a .md file in global-context/.
  */
-export function composeSystemPrompt(global: GlobalContext): string {
+export async function composeSystemPrompt(global: GlobalContext): Promise<string> {
   const { identity, agent, tools, businessContext, memory } = global
-  const sections: string[] = [ROLE_PREAMBLE]
 
-  // --- IDENTITY (BUSINESS.md) ---
+  // Load static prompt sections from markdown
+  const [rolePreamble, outputFormat, calendarDisabledMsg] = await Promise.all([
+    loadMarkdownSection('role.md', 'System Prompt'),
+    loadMarkdownSection('role.md', 'Output Format'),
+    loadMarkdownSection('tools.md', 'Calendar Not Connected'),
+  ])
+
+  const sections: string[] = [rolePreamble]
+
+  // --- IDENTITY (identity.md) ---
   sections.push(`## Business Identity
 Business: ${identity.businessName}
 Vertical: ${identity.vertical}${identity.description ? `\nDescription: ${identity.description}` : ''}`)
@@ -32,7 +41,7 @@ Vertical: ${identity.vertical}${identity.description ? `\nDescription: ${identit
 ${identity.toneProfile}`)
   }
 
-  // --- AGENT ---
+  // --- AGENT (agent.md) ---
   if (agent.sopRules.length > 0) {
     sections.push(`## SOP Rules
 ${agent.sopRules.map(r => `- ${r}`).join('\n')}`)
@@ -53,32 +62,25 @@ Classify every message into exactly one primary intent: ${agent.intentTaxonomy.j
 If multiple intents are present, classify the most actionable one as primary.
 Report your confidence as a float between 0.0 and 1.0.`)
 
-  // --- TOOLS ---
+  // --- TOOLS (tools.md) ---
   if (!tools.calendarConnected) {
-    sections.push(`## Calendar Status
-Calendar is NOT connected. Do not offer to check availability or book appointments. If the client asks about scheduling, let them know you'll need to check manually and follow up.`)
+    sections.push(calendarDisabledMsg)
   }
 
-  // --- BUSINESS CONTEXT ---
+  // --- BUSINESS CONTEXT (business.md) ---
   sections.push(`## Business Context
 Timezone: ${businessContext.timezone}
 Business Hours: ${formatBusinessHours(businessContext.businessHours)}
 Appointment Reminders: ${businessContext.scheduledReminder.enabled ? `Enabled (${businessContext.scheduledReminder.daysBefore} day before)` : 'Disabled'}`)
 
-  // --- MEMORY ---
+  // --- MEMORY (memory.md) ---
   if (memory.communicationRules.length > 0) {
     sections.push(`## Communication Rules (Learned from past interactions)
 ${memory.communicationRules.map(r => `- ${r.rule}`).join('\n')}`)
   }
 
-  // --- OUTPUT FORMAT ---
-  sections.push(`## Output Format
-Your final message should be the draft reply text to send to the client.
-Include your intent classification and confidence in a structured JSON block at the START of your response:
-\`\`\`json
-{"intent": "booking_inquiry", "confidence": 0.95, "scenario_type": "returning_client"}
-\`\`\`
-Then write the draft reply text below it.`)
+  // --- OUTPUT FORMAT (role.md) ---
+  sections.push(`## Output Format\n${outputFormat}`)
 
   return sections.join('\n\n')
 }

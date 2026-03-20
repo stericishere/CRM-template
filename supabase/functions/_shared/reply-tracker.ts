@@ -68,6 +68,7 @@ export async function trackReplySignal(
         ...(match.conversation_id === null ? { conversation_id: conversationId } : {}),
       })
       .eq('id', match.id)
+      .is('client_replied', null)
 
     if (updateError) {
       console.error('[reply-tracker] Signal update failed:', updateError.message)

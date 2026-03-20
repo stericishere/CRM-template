@@ -179,7 +179,7 @@ async function handleRefine(
   })
 
   const raw = result.message.content ?? ''
-  const toneProfile = parseJsonFromLLM<ToneProfile>(raw, 'onboarding-tone')
+  const toneProfile = validateToneProfile(parseJsonFromLLM<ToneProfile>(raw, 'onboarding-tone'))
 
   // Persist updated tone profile
   const { error: updateError } = await supabase
