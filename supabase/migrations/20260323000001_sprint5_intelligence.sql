@@ -230,28 +230,56 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
--- 2f. pgmq queues for classify-edits
-SELECT pgmq.create('classify_edits');
-SELECT pgmq.create('classify_edits_dlq');
-
--- 2g. Trigger: enqueue edited_and_sent signals for classification
-CREATE OR REPLACE FUNCTION enqueue_edit_signal()
+-- 2f. pg_net trigger: fire classify-edits on edited_and_sent signal INSERT
+CREATE OR REPLACE FUNCTION trigger_edit_classification()
 RETURNS TRIGGER AS $$
 BEGIN
-  IF NEW.staff_action = 'edited_and_sent' THEN
-    PERFORM pgmq.send('classify_edits', jsonb_build_object(
-      'signal_id', NEW.id,
-      'workspace_id', NEW.workspace_id
-    ));
+  IF NEW.staff_action = 'edited_and_sent' AND NEW.processed_at IS NULL THEN
+    PERFORM net.http_post(
+      url := current_setting('app.supabase_url')
+             || '/functions/v1/classify-edits',
+      headers := jsonb_build_object(
+        'Authorization', 'Bearer ' || current_setting('app.service_role_key'),
+        'Content-Type', 'application/json'
+      ),
+      body := jsonb_build_object(
+        'signal_id', NEW.id,
+        'workspace_id', NEW.workspace_id
+      )
+    );
   END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_enqueue_edit_signal ON draft_edit_signals;
-CREATE TRIGGER trg_enqueue_edit_signal
+DROP TRIGGER IF EXISTS trg_classify_edit_signal ON draft_edit_signals;
+CREATE TRIGGER trg_classify_edit_signal
   AFTER INSERT ON draft_edit_signals
-  FOR EACH ROW EXECUTE FUNCTION enqueue_edit_signal();
+  FOR EACH ROW
+  EXECUTE FUNCTION trigger_edit_classification();
+
+-- 2g. pg_cron: batch-process unclassified edits every 5 minutes (safety net)
+SELECT cron.schedule(
+  'retry-unclassified-edits',
+  '*/5 * * * *',
+  $$
+  SELECT net.http_post(
+    url := current_setting('app.supabase_url')
+           || '/functions/v1/classify-edits',
+    headers := jsonb_build_object(
+      'Authorization', 'Bearer ' || current_setting('app.service_role_key'),
+      'Content-Type', 'application/json'
+    ),
+    body := '{}'::jsonb
+  )
+  WHERE EXISTS (
+    SELECT 1 FROM draft_edit_signals
+    WHERE staff_action = 'edited_and_sent'
+      AND processed_at IS NULL
+    LIMIT 1
+  );
+  $$
+);
 
 -- 2h. Advisory lock RPC wrappers (PostgREST cannot call pg_try_advisory_lock directly)
 CREATE OR REPLACE FUNCTION try_advisory_lock(lock_key BIGINT)

@@ -148,9 +148,11 @@ async function executeFollowUpCreate(
     workspace_id: action.workspaceId,
     client_id: action.clientId,
     content: action.payload.description,
+    type: action.payload.type ?? 'follow_up',
     due_date: action.payload.dueDate ?? null,
     status: 'open',
     source: 'ai_proposed',
+    source_note_id: action.payload.sourceNoteId ?? null,
   })
 
   if (error) return { success: false, error: error.message }

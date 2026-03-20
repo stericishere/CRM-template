@@ -1,4 +1,4 @@
-import { callLLM } from './llm-client.ts';
+import { callLLM, FLASH_MODEL } from './llm-client.ts';
 
 export async function generateRuleInstruction(
   patternKey: string,
@@ -27,7 +27,7 @@ Write ONE imperative instruction sentence (1-2 lines max) addressed to the AI dr
 Respond with the instruction text only, no JSON wrapping.`;
 
   const result = await callLLM({
-    model: 'cheap',
+    model: FLASH_MODEL,
     systemPrompt: 'You write clear, concise communication instructions.',
     messages: [{ role: 'user', content: prompt }],
     maxTokens: 200,
