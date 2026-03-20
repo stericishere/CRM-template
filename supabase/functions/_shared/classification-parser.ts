@@ -1,4 +1,4 @@
-import { EDIT_CATEGORIES, type ClassificationResponse } from './types/learning.ts';
+import { EDIT_CATEGORIES, type ClassificationResponse } from './types/learning';
 
 const VALID_SEVERITIES = ['minor', 'significant', 'rewrite'];
 

@@ -21,7 +21,7 @@ export function resolveDeadline(
   if (trimmed === 'tomorrow') return addDays(base, 1);
 
   const inNMatch = trimmed.match(IN_N_DAYS_RE);
-  if (inNMatch) return addDays(base, parseInt(inNMatch[1], 10));
+  if (inNMatch && inNMatch[1]) return addDays(base, parseInt(inNMatch[1], 10));
 
   if (trimmed === 'next week') {
     const daysUntilMonday = ((1 - baseDay + 7) % 7) || 7;
@@ -41,7 +41,7 @@ export function resolveDeadline(
   }
 
   const byDayMatch = trimmed.match(BY_DAY_RE);
-  if (byDayMatch) {
+  if (byDayMatch && byDayMatch[1]) {
     const targetDay = DAY_NAMES.indexOf(byDayMatch[1].toLowerCase());
     const daysUntil = ((targetDay - baseDay + 7) % 7) || 7;
     return addDays(base, daysUntil);

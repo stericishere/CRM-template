@@ -12,8 +12,8 @@ describe('parseCategorizationResponse', () => {
     });
     const result = parseCategorizationResponse(raw);
     expect(result).not.toBeNull();
-    expect(result!.extractions).toHaveLength(1);
-    expect(result!.extractions[0].category).toBe('FOLLOW_UP');
+    expect(result?.extractions).toHaveLength(1);
+    expect(result?.extractions?.[0]?.category).toBe('FOLLOW_UP');
   });
 
   it('should parse a response with promise', () => {
@@ -27,7 +27,7 @@ describe('parseCategorizationResponse', () => {
     });
     const result = parseCategorizationResponse(raw);
     expect(result).not.toBeNull();
-    expect(result!.extractions[0].category).toBe('PROMISE');
+    expect(result?.extractions?.[0]?.category).toBe('PROMISE');
   });
 
   it('should filter out duplicate promises', () => {
@@ -39,8 +39,8 @@ describe('parseCategorizationResponse', () => {
     });
     const result = parseCategorizationResponse(raw);
     expect(result).not.toBeNull();
-    expect(result!.extractions).toHaveLength(1);
-    expect(result!.extractions[0].category).toBe('FOLLOW_UP');
+    expect(result?.extractions).toHaveLength(1);
+    expect(result?.extractions?.[0]?.category).toBe('FOLLOW_UP');
   });
 
   it('should reject CLIENT_UPDATE with unknown field', () => {

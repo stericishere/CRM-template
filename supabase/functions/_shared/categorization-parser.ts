@@ -1,5 +1,5 @@
-import type { CategorizationResponse, Extraction } from './types/extraction.ts';
-import { UPDATABLE_FIELDS, PREFERENCES_PREFIX } from './types/extraction.ts';
+import type { CategorizationResponse, Extraction } from './types/extraction';
+import { UPDATABLE_FIELDS, PREFERENCES_PREFIX } from './types/extraction';
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
