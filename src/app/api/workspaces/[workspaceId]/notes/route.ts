@@ -80,6 +80,8 @@ export async function POST(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped service client
     const supabase = getServiceClient() as any
 
+    const extraction_status = parsed.data.source === 'merge_history' ? 'not_applicable' : 'pending';
+
     const { data, error } = await supabase
       .from('notes')
       .insert({
@@ -87,6 +89,7 @@ export async function POST(
         client_id: parsed.data.client_id,
         content: parsed.data.content,
         source: parsed.data.source,
+        extraction_status,
       })
       .select('*')
       .single()
