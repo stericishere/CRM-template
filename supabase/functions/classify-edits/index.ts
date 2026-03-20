@@ -59,6 +59,7 @@ interface SignalRow {
   workspace_id: string
   client_id: string | null
   draft_id: string | null
+  created_at: string
   original_draft: string
   final_version: string
   intent_classified: string | null
@@ -158,6 +159,8 @@ async function processSignal(
       severity: classification.severity,
       pattern_keys: classification.pattern_keys,
       analysis_notes: classification.analysis_notes,
+      llm_model: FLASH_MODEL,
+      llm_latency_ms: latencyMs,
     })
 
   if (classInsertErr) {
@@ -186,6 +189,7 @@ async function processSignal(
       p_pattern_key: patternKey,
       p_category: primaryCategory,
       p_client_id: signal.client_id,
+      p_signal_created_at: signal.created_at,
     })
 
     if (rpcErr) {

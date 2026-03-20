@@ -136,11 +136,16 @@ serve(async (req) => {
     const tz = workspace.timezone ?? 'UTC'
     const currentDate = new Date().toLocaleDateString('en-CA', { timeZone: tz }) // YYYY-MM-DD
 
-    // Extract custom fields from vertical_config
+    // Extract custom fields from vertical_config (stored as custom_fields per onboarding schema)
     const verticalConfig = (workspace.vertical_config ?? {}) as Record<string, unknown>
-    const customFields: string[] = Array.isArray(verticalConfig.customFields)
-      ? (verticalConfig.customFields as string[])
+    const rawCustomFields = Array.isArray(verticalConfig.custom_fields)
+      ? verticalConfig.custom_fields
       : []
+    const customFields: string[] = rawCustomFields.map(
+      (f: unknown) => typeof f === 'object' && f !== null && 'name' in f
+        ? String((f as { name: string }).name)
+        : String(f)
+    )
 
     // ─── 6. Build categorization input and call Haiku ─────────
     const categorizationInput: CategorizationInput = {
@@ -197,7 +202,7 @@ serve(async (req) => {
             payload: {
               type: 'follow_up',
               description: extraction.description,
-              due_date: extraction.due_date,
+              dueDate: extraction.due_date,
             },
             status: 'pending',
           }
@@ -213,26 +218,31 @@ serve(async (req) => {
             payload: {
               type: 'promise',
               description: extraction.description,
-              due_date: extraction.due_date,
+              dueDate: extraction.due_date,
             },
             status: 'pending',
           }
 
-        case 'CLIENT_UPDATE':
+        case 'CLIENT_UPDATE': {
+          // Build changes object matching action-executor contract:
+          // executeClientUpdate reads payload.changes as Record<string, unknown>
+          const changes: Record<string, unknown> = {}
+          changes[extraction.field] = extraction.after_value
           return {
             workspace_id,
             client_id,
             source_note_id: note_id,
             action_type: 'client_update',
             tier: 'review',
-            summary: `Update ${extraction.field}`,
+            summary: `Update ${extraction.field}: ${JSON.stringify(extraction.before_value)} → ${JSON.stringify(extraction.after_value)}`,
             payload: {
-              field: extraction.field,
-              before_state: extraction.before_value,
-              after_state: extraction.after_value,
+              changes,
+              before_state: { [extraction.field]: extraction.before_value },
+              after_state: { [extraction.field]: extraction.after_value },
             },
             status: 'pending',
           }
+        }
       }
     })
 

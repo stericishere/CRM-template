@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase/service'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // GET /api/workspaces/:workspaceId/rules
@@ -14,6 +15,9 @@ export async function GET(
 ) {
   try {
     const { workspaceId } = await params
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped service client
     const supabase = getServiceClient() as any

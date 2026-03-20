@@ -75,9 +75,11 @@ jobs:
         with:
           version: latest
       - run: |
-          supabase functions deploy process-message --project-ref ${{ secrets.SUPABASE_PROJECT_REF }}
-          supabase functions deploy approve-action --project-ref ${{ secrets.SUPABASE_PROJECT_REF }}
-          supabase functions deploy daily-cron --project-ref ${{ secrets.SUPABASE_PROJECT_REF }}
-          supabase functions deploy embed-knowledge --project-ref ${{ secrets.SUPABASE_PROJECT_REF }}
+          supabase functions deploy process-message --project-ref "$PROJECT_REF"
+          supabase functions deploy approve-action --project-ref "$PROJECT_REF"
+          supabase functions deploy embed-knowledge --project-ref "$PROJECT_REF"
+          supabase functions deploy categorize-note --project-ref "$PROJECT_REF"
+          supabase functions deploy classify-edits --project-ref "$PROJECT_REF"
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
