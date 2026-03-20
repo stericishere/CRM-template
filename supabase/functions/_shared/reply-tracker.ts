@@ -27,29 +27,43 @@ export async function trackReplySignal(
     //
     // We filter by conversation_id first (direct match), falling back to
     // workspace_id isolation if conversation_id is null on the signal row.
+    // Query by conversation_id directly to avoid missing signals when
+    // the workspace has many newer pending signals in other conversations
+    const cutoff = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString()
     const { data: signal, error: selectError } = await supabase
       .from('draft_edit_signals')
       .select('id, created_at, conversation_id')
       .eq('workspace_id', workspaceId)
+      .eq('conversation_id', conversationId)
       .is('client_replied', null)
       .in('staff_action', ['sent_as_is', 'edited_and_sent'])
-      .gte('created_at', new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString())
+      .gte('created_at', cutoff)
       .order('created_at', { ascending: false })
-      .limit(10) // fetch a small batch to filter by conversation_id in JS
+      .limit(1)
 
     if (selectError) {
       console.error('[reply-tracker] Signal lookup failed:', selectError.message)
       return
     }
 
-    if (!signal || signal.length === 0) {
-      return
-    }
+    let match = signal?.[0] ?? null
 
-    // Match by conversation_id: prefer exact match, then fall back to null conversation_id
-    const match =
-      signal.find((s) => s.conversation_id === conversationId) ??
-      signal.find((s) => s.conversation_id === null)
+    // Fallback: if no signal matched this conversation, check for signals
+    // with null conversation_id (pre-Sprint 4 signals that weren't backfilled)
+    if (!match) {
+      const { data: fallback } = await supabase
+        .from('draft_edit_signals')
+        .select('id, created_at, conversation_id')
+        .eq('workspace_id', workspaceId)
+        .is('conversation_id', null)
+        .is('client_replied', null)
+        .in('staff_action', ['sent_as_is', 'edited_and_sent'])
+        .gte('created_at', cutoff)
+        .order('created_at', { ascending: false })
+        .limit(1)
+
+      match = fallback?.[0] ?? null
+    }
 
     if (!match) {
       return

@@ -120,9 +120,8 @@ export async function POST(
           .from('workspaces')
           .update({
             business_name: input.business_name,
-            vertical: input.vertical,
+            vertical_type: input.vertical,
             timezone: input.timezone,
-            description: input.description ?? null,
             instagram_handle: input.instagram_handle ?? null,
           })
           .eq('id', workspaceId)

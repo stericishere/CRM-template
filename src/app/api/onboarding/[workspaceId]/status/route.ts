@@ -11,7 +11,7 @@ import { getServiceClient } from '@/lib/supabase/service'
 interface WorkspaceRow {
   id: string
   business_name: string | null
-  vertical: string | null
+  vertical_type: string | null
   timezone: string | null
   knowledge_base: string | null
   whatsapp_connection_status: string
@@ -36,7 +36,7 @@ export async function GET(
       .select(`
         id,
         business_name,
-        vertical,
+        vertical_type,
         timezone,
         knowledge_base,
         whatsapp_connection_status,
@@ -58,7 +58,7 @@ export async function GET(
     // Derive step completion from column values
     const steps = {
       whatsapp: workspace.whatsapp_connection_status === 'connected',
-      identity: !!(workspace.business_name && workspace.vertical),
+      identity: !!(workspace.business_name && workspace.vertical_type),
       knowledge: !!workspace.knowledge_base,
       sops: !!workspace.vertical_config,
       tone: !!workspace.tone_profile,
@@ -76,7 +76,7 @@ export async function GET(
       steps,
       workspace: {
         business_name: workspace.business_name,
-        vertical: workspace.vertical,
+        vertical: workspace.vertical_type,
         timezone: workspace.timezone,
         whatsapp_connection_status: workspace.whatsapp_connection_status,
         whatsapp_phone_number: workspace.whatsapp_phone_number,

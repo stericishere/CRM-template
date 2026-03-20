@@ -37,9 +37,8 @@ export async function PUT(
       .from('workspaces')
       .update({
         business_name,
-        vertical,
+        vertical_type: vertical,
         timezone,
-        description,
         instagram_handle: instagram_handle ?? null,
       })
       .eq('id', workspaceId)
