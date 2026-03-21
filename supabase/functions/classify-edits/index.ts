@@ -201,9 +201,11 @@ async function processSignal(
     }
   }
 
-  // 8-10. Rule creation: check ALL pattern keys, not just the first
-  for (const patternKey of classification.pattern_keys) {
-    await maybeCreateRule(supabase, signal, patternKey, primaryCategory, tag)
+  // 8-10. Rule creation: check ALL pattern keys with their matching category
+  for (let i = 0; i < classification.pattern_keys.length; i++) {
+    const patternKey = classification.pattern_keys[i]
+    const category = classification.edit_categories[i] ?? primaryCategory
+    await maybeCreateRule(supabase, signal, patternKey, category, tag)
   }
 
   // 11. Log LLM usage (fire-and-log, non-blocking)

@@ -131,6 +131,8 @@ export async function PATCH(
       updates.status = parsed.data.status
       if (parsed.data.status === 'removed') {
         updates.removed_at = new Date().toISOString()
+      } else if (parsed.data.status === 'active') {
+        updates.removed_at = null
       }
     }
     updates.updated_at = new Date().toISOString()

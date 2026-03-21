@@ -127,13 +127,15 @@ export async function POST(
       )
     }
 
-    // Check for existing pending invitation
+    // Check for existing pending AND non-expired invitation.
+    // Expired invites should not block re-invitation.
     const { data: existingInvitation } = await supabase
       .from('staff_invitations')
       .select('id')
       .eq('workspace_id', workspaceId)
       .eq('email', email)
       .eq('status', 'pending')
+      .gt('expires_at', new Date().toISOString())
       .maybeSingle()
 
     if (existingInvitation) {
