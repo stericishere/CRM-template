@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase/service'
-import { createClient } from '@/lib/supabase/server'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? ''
@@ -52,21 +52,9 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Verify the authenticated user belongs to this workspace
-    const authClient = await createClient()
-    const { data: { user } } = await authClient.auth.getUser()
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-    const { data: staffRow } = await authClient
-      .from('staff')
-      .select('id')
-      .eq('id', user.id)
-      .eq('workspace_id', workspaceId)
-      .maybeSingle()
-    if (!staffRow) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-    }
+    // Verify the authenticated user is an active member of this workspace
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       console.error('[POST /today/refresh] Missing SUPABASE_URL or SUPABASE_ANON_KEY env vars')

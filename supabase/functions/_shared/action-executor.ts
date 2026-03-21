@@ -125,11 +125,34 @@ async function executeBookingCreate(
   }
 }
 
+const ALLOWED_CLIENT_FIELDS = new Set([
+  'full_name',
+  'phone',
+  'email',
+  'tags',
+  'preferences',
+  'lifecycle_status',
+  'last_contacted_at',
+  'summary',
+])
+
 async function executeClientUpdate(
   supabase: SupabaseClient,
   action: ProposedAction
 ): Promise<ExecutionResult> {
-  const changes = action.payload.changes as Record<string, unknown> ?? {}
+  const rawChanges = action.payload.changes as Record<string, unknown> ?? {}
+
+  // Allowlist filter: only permit known safe fields to be updated
+  const changes: Record<string, unknown> = {}
+  for (const key of Object.keys(rawChanges)) {
+    if (ALLOWED_CLIENT_FIELDS.has(key)) {
+      changes[key] = rawChanges[key]
+    }
+  }
+
+  if (Object.keys(changes).length === 0) {
+    return { success: false, error: 'No valid fields to update' }
+  }
 
   // Handle preferences JSONB merge: if changes.preferences is an object,
   // read current preferences and merge rather than overwriting.

@@ -52,10 +52,10 @@ export async function GET(request: NextRequest) {
 // Body: { token: string }
 //
 // Flow:
-//   1. Validate token against pending + non-expired invitations
-//   2. Check Supabase Auth user exists for the email
+//   1. Atomically claim invitation (UPDATE WHERE status=pending)
+//   2. Verify caller email matches invitation
 //   3. Check no duplicate staff record in the workspace
-//   4. Create staff record and mark invitation as accepted
+//   4. Create/reactivate staff record (rollback invitation on failure)
 // Returns { staff: {...}, workspace_id } with status 201
 // ──────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
@@ -85,17 +85,19 @@ export async function POST(request: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped service client
     const supabase = getServiceClient() as any
 
-    // 1. Look up the pending, non-expired invitation
+    // 1. Atomically claim the invitation — UPDATE ... WHERE guards
+    //    against races (two concurrent accepts for the same token).
     const { data: invitation, error: invError } = await supabase
       .from('staff_invitations')
-      .select('*')
+      .update({ status: 'accepted', accepted_at: new Date().toISOString() })
       .eq('token', token)
       .eq('status', 'pending')
       .gt('expires_at', new Date().toISOString())
+      .select('*')
       .maybeSingle()
 
     if (invError) {
-      console.error('[POST /accept-invitation] Invitation query failed:', invError.message)
+      console.error('[POST /accept-invitation] Invitation claim failed:', invError.message)
       return NextResponse.json(
         { error: 'Failed to look up invitation' },
         { status: 500 }
@@ -112,6 +114,11 @@ export async function POST(request: NextRequest) {
     // 2. Verify the authenticated caller's email matches the invitation
     const authUser = auth.user
     if (authUser.email?.toLowerCase() !== invitation.email.toLowerCase()) {
+      // Roll back: unclaim the invitation since email doesn't match
+      await supabase
+        .from('staff_invitations')
+        .update({ status: 'pending', accepted_at: null })
+        .eq('id', invitation.id)
       return NextResponse.json(
         { error: 'This invitation was sent to a different email address' },
         { status: 403 }
@@ -119,9 +126,10 @@ export async function POST(request: NextRequest) {
     }
 
     // 3. Check for existing staff record (any status)
+    //    Include removed_at so rollback can restore the original value (P1-9).
     const { data: existingStaff } = await supabase
       .from('staff')
-      .select('id, status')
+      .select('id, status, removed_at')
       .eq('id', authUser.id)
       .eq('workspace_id', invitation.workspace_id)
       .maybeSingle()
@@ -131,6 +139,14 @@ export async function POST(request: NextRequest) {
         { error: 'You are already a member of this workspace' },
         { status: 409 }
       )
+    }
+
+    // Helper: roll back the invitation claim if staff mutation fails
+    const rollBackInvitation = async () => {
+      await supabase
+        .from('staff_invitations')
+        .update({ status: 'pending', accepted_at: null })
+        .eq('id', invitation.id)
     }
 
     let staff
@@ -154,6 +170,7 @@ export async function POST(request: NextRequest) {
 
       if (reactivateError) {
         console.error('[POST /accept-invitation] Staff reactivation failed:', reactivateError.message)
+        await rollBackInvitation()
         return NextResponse.json(
           { error: 'Failed to reactivate staff record' },
           { status: 500 }
@@ -178,6 +195,7 @@ export async function POST(request: NextRequest) {
 
       if (staffError) {
         console.error('[POST /accept-invitation] Staff insert failed:', staffError.message)
+        await rollBackInvitation()
         return NextResponse.json(
           { error: 'Failed to create staff record' },
           { status: 500 }
@@ -186,38 +204,7 @@ export async function POST(request: NextRequest) {
       staff = data
     }
 
-    // 5. Mark invitation as accepted — if this fails, roll back the staff
-    //    change to prevent inconsistent state (active member + pending invite).
-    const { error: updateError } = await supabase
-      .from('staff_invitations')
-      .update({
-        status: 'accepted',
-        accepted_at: new Date().toISOString(),
-      })
-      .eq('id', invitation.id)
-
-    if (updateError) {
-      console.error('[POST /accept-invitation] Invitation update failed, rolling back staff:', updateError.message)
-      // Roll back: re-remove or delete the staff record we just created/reactivated
-      if (existingStaff) {
-        await supabase
-          .from('staff')
-          .update({ status: existingStaff.status, removed_at: new Date().toISOString() })
-          .eq('id', authUser.id)
-          .eq('workspace_id', invitation.workspace_id)
-      } else {
-        await supabase
-          .from('staff')
-          .delete()
-          .eq('id', authUser.id)
-          .eq('workspace_id', invitation.workspace_id)
-      }
-      return NextResponse.json(
-        { error: 'Failed to complete invitation acceptance' },
-        { status: 500 }
-      )
-    }
-
+    // Invitation was already marked accepted in step 1 (atomic claim).
     return NextResponse.json(
       {
         staff,

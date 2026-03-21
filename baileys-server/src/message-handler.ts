@@ -80,6 +80,9 @@ export async function handleInboundMessage(
   // Skip group messages — only process 1:1 chats
   if (fromJid.includes('@g.us')) return
 
+  // Skip non-personal JIDs (status@broadcast, lid chats, etc.)
+  if (!fromJid.endsWith('@s.whatsapp.net')) return
+
   const phone = jidToE164(fromJid)
   const { text, mediaType } = extractMessageContent(msg)
 

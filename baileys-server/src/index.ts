@@ -3,7 +3,7 @@ import cors from 'cors'
 import { config } from './config.js'
 import { logger } from './logger.js'
 import { healthRouter } from './health.js'
-import { qrRouter } from './qr-handler.js'
+import { qrRouter, activeSseConnections } from './qr-handler.js'
 import { sendRouter } from './send-handler.js'
 import { connectWorkspace } from './socket-manager.js'
 import { handleInboundMessage } from './message-handler.js'
@@ -53,14 +53,19 @@ app.post('/reconnect/:workspaceId', async (req: Request, res: Response): Promise
   }
 })
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  logger.info('SIGTERM received, shutting down...')
-  process.exit(0)
+const server = app.listen(config.PORT, () => {
+  logger.info({ port: config.PORT }, 'Baileys server started')
 })
 
-app.listen(config.PORT, () => {
-  logger.info({ port: config.PORT }, 'Baileys server started')
+// Graceful shutdown — close SSE connections so server.close() can complete
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM received, shutting down...')
+  for (const res of activeSseConnections) {
+    res.end()
+  }
+  server.close(() => {
+    process.exit(0)
+  })
 })
 
 export { app }

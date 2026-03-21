@@ -5,6 +5,9 @@ import { logger } from './logger.js'
 
 export const qrRouter = Router()
 
+/** Track active SSE connections so they can be closed on shutdown. */
+export const activeSseConnections = new Set<Response>()
+
 /**
  * GET /qr/:workspaceId — SSE stream that sends QR codes as they are generated.
  *
@@ -28,6 +31,8 @@ qrRouter.get('/qr/:workspaceId', async (req: Request, res: Response): Promise<vo
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
   res.flushHeaders()
+  activeSseConnections.add(res)
+  res.on('close', () => activeSseConnections.delete(res))
 
   // Start connection (will generate QR if no stored creds)
   try {
@@ -70,7 +75,7 @@ qrRouter.get('/qr/:workspaceId', async (req: Request, res: Response): Promise<vo
     }
   }, STATUS_POLL_INTERVAL_MS)
 
-  // Clean up on client disconnect
+  // Clean up interval on client disconnect or stream end
   req.on('close', () => {
     clearInterval(statusInterval)
   })

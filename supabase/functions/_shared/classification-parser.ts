@@ -32,7 +32,11 @@ export function parseClassificationResponse(raw: string): ClassificationResponse
   return {
     edit_categories: validCategories,
     severity,
-    pattern_keys: Array.isArray(obj.pattern_keys) ? obj.pattern_keys : [],
+    pattern_keys: Array.isArray(obj.pattern_keys)
+      ? (obj.pattern_keys as string[]).filter(
+          (k: string) => typeof k === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(k),
+        )
+      : [],
     analysis_notes: typeof obj.analysis_notes === 'string' ? obj.analysis_notes : '',
   };
 }

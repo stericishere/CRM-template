@@ -241,6 +241,8 @@ serve(async (req) => {
             changes['phone'] = extraction.after_value
           } else if (field.startsWith('preferences.')) {
             const prefKey = field.slice('preferences.'.length)
+            // Wrap as partial object — executeClientUpdate merges into existing
+            // JSONB via read-modify-write, so this does NOT overwrite the full column.
             changes['preferences'] = { [prefKey]: extraction.after_value }
           } else {
             changes[field] = extraction.after_value

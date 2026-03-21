@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase/service'
-import { createClient } from '@/lib/supabase/server'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 import {
   orchestrateSchema,
   type OrchestrateInput,
@@ -75,21 +75,9 @@ export async function POST(
 
     const input = parsed.data
 
-    // Verify the authenticated user belongs to this workspace
-    const authClient = await createClient()
-    const { data: { user } } = await authClient.auth.getUser()
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-    const { data: staffRow } = await authClient
-      .from('staff')
-      .select('id')
-      .eq('id', user.id)
-      .eq('workspace_id', workspaceId)
-      .maybeSingle()
-    if (!staffRow) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-    }
+    // Verify the authenticated user is an active member of this workspace
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped service client
     const supabase = getServiceClient() as any
