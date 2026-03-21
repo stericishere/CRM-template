@@ -2,9 +2,46 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase/service'
 import { z } from 'zod'
 
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
+
 const acceptSchema = z.object({
   token: z.string().min(1),
 })
+
+// ──────────────────────────────────────────────────────────
+// GET /api/auth/accept-invitation?token=...
+//
+// Browser-clickable entry point. Validates the token exists,
+// then redirects to the app with the token so the frontend
+// can complete the acceptance (POST with auth context).
+// ──────────────────────────────────────────────────────────
+export async function GET(request: NextRequest) {
+  const token = request.nextUrl.searchParams.get('token')
+  if (!token) {
+    return NextResponse.redirect(`${APP_URL}/invite?error=missing_token`)
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped service client
+  const supabase = getServiceClient() as any
+
+  // Validate token exists and is pending + not expired
+  const { data: invitation } = await supabase
+    .from('staff_invitations')
+    .select('id, workspace_id, email, full_name, role')
+    .eq('token', token)
+    .eq('status', 'pending')
+    .gt('expires_at', new Date().toISOString())
+    .maybeSingle()
+
+  if (!invitation) {
+    return NextResponse.redirect(`${APP_URL}/invite?error=invalid_or_expired`)
+  }
+
+  // Redirect to the app's invite acceptance page with token
+  return NextResponse.redirect(
+    `${APP_URL}/invite?token=${encodeURIComponent(token)}&workspace=${invitation.workspace_id}&email=${encodeURIComponent(invitation.email)}`
+  )
+}
 
 // ──────────────────────────────────────────────────────────
 // POST /api/auth/accept-invitation
@@ -88,43 +125,72 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // 3. Check if staff record already exists for this user in this workspace
+    // 3. Check for existing staff record (any status)
     const { data: existingStaff } = await supabase
       .from('staff')
-      .select('id')
+      .select('id, status')
       .eq('id', authUser.id)
       .eq('workspace_id', invitation.workspace_id)
-      .eq('status', 'active')
       .maybeSingle()
 
-    if (existingStaff) {
+    if (existingStaff?.status === 'active') {
       return NextResponse.json(
         { error: 'You are already a member of this workspace' },
         { status: 409 }
       )
     }
 
-    // 4. Create the staff record
-    const { data: staff, error: staffError } = await supabase
-      .from('staff')
-      .insert({
-        id: authUser.id,
-        workspace_id: invitation.workspace_id,
-        full_name: invitation.full_name,
-        email: invitation.email,
-        role: invitation.role,
-        status: 'active',
-        invited_by: invitation.invited_by,
-      })
-      .select('id, workspace_id, full_name, email, role')
-      .single()
+    let staff
+    if (existingStaff) {
+      // 4a. Reactivate a previously removed staff member
+      const { data, error: reactivateError } = await supabase
+        .from('staff')
+        .update({
+          status: 'active',
+          role: invitation.role,
+          full_name: invitation.full_name,
+          email: invitation.email,
+          invited_by: invitation.invited_by,
+          removed_at: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', authUser.id)
+        .eq('workspace_id', invitation.workspace_id)
+        .select('id, workspace_id, full_name, email, role')
+        .single()
 
-    if (staffError) {
-      console.error('[POST /accept-invitation] Staff insert failed:', staffError.message)
-      return NextResponse.json(
-        { error: 'Failed to create staff record' },
-        { status: 500 }
-      )
+      if (reactivateError) {
+        console.error('[POST /accept-invitation] Staff reactivation failed:', reactivateError.message)
+        return NextResponse.json(
+          { error: 'Failed to reactivate staff record' },
+          { status: 500 }
+        )
+      }
+      staff = data
+    } else {
+      // 4b. Create new staff record
+      const { data, error: staffError } = await supabase
+        .from('staff')
+        .insert({
+          id: authUser.id,
+          workspace_id: invitation.workspace_id,
+          full_name: invitation.full_name,
+          email: invitation.email,
+          role: invitation.role,
+          status: 'active',
+          invited_by: invitation.invited_by,
+        })
+        .select('id, workspace_id, full_name, email, role')
+        .single()
+
+      if (staffError) {
+        console.error('[POST /accept-invitation] Staff insert failed:', staffError.message)
+        return NextResponse.json(
+          { error: 'Failed to create staff record' },
+          { status: 500 }
+        )
+      }
+      staff = data
     }
 
     // 5. Mark invitation as accepted

@@ -8,6 +8,7 @@ ALTER TABLE staff ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'
 ALTER TABLE staff ADD COLUMN IF NOT EXISTS phone TEXT;
 ALTER TABLE staff ADD COLUMN IF NOT EXISTS invited_by UUID REFERENCES staff(id);
 ALTER TABLE staff ADD COLUMN IF NOT EXISTS removed_at TIMESTAMPTZ;
+ALTER TABLE staff ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
 
 DO $$ BEGIN
   ALTER TABLE staff ADD CONSTRAINT chk_staff_status
@@ -109,7 +110,14 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- 5. Helper function for role checking
+-- 5. Helper functions
+-- Tighten workspace_id to only resolve for active staff — removed users
+-- must not pass RLS checks even with a valid JWT.
+CREATE OR REPLACE FUNCTION auth.workspace_id()
+RETURNS UUID AS $$
+  SELECT workspace_id FROM public.staff WHERE id = auth.uid() AND status = 'active'
+$$ LANGUAGE sql SECURITY DEFINER STABLE;
+
 CREATE OR REPLACE FUNCTION auth.staff_role()
 RETURNS TEXT AS $$
   SELECT role FROM public.staff WHERE id = auth.uid() AND status = 'active'

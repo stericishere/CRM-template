@@ -38,7 +38,7 @@ export async function GET(
         .order('created_at', { ascending: true }),
       supabase
         .from('staff_invitations')
-        .select('*')
+        .select('id, workspace_id, email, full_name, role, status, expires_at, created_at')
         .eq('workspace_id', workspaceId)
         .eq('status', 'pending')
         .order('created_at', { ascending: false }),
