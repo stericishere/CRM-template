@@ -42,6 +42,7 @@ export async function assembleContext(
     recentNotes,
     conversationState,
     knowledgeChunks,
+    communicationRuleInstructions,
   ] = await Promise.all([
     loadWorkspaceConfig(supabase, workspaceId),
     loadClientProfile(supabase, workspaceId, clientId),
@@ -54,11 +55,32 @@ export async function assembleContext(
     inboundMessage.content
       ? searchKnowledge(supabase, workspaceId, inboundMessage.content, { topK: 5, tokenBudget: 2000 })
       : Promise.resolve([]),
+    loadCommunicationRules(supabase, workspaceId),
   ])
 
+  // Build GlobalContext, then merge in DB-loaded communication rules (F-15)
+  const globalContext = buildGlobalContext(workspaceId, workspace)
+
+  // Merge table-sourced rules (F-15) with any rules from workspace config.
+  // Table rules come first (higher signal: learned from staff edits).
+  if (communicationRuleInstructions.length > 0) {
+    const tableRules = communicationRuleInstructions.map((instruction) => ({
+      rule: instruction,
+      source: 'learned',
+      createdAt: new Date().toISOString(),
+    }))
+    globalContext.memory = {
+      ...globalContext.memory,
+      communicationRules: [
+        ...tableRules,
+        ...globalContext.memory.communicationRules,
+      ],
+    }
+  }
+
   return {
-    // GlobalContext — built by global-context/ router
-    ...buildGlobalContext(workspaceId, workspace),
+    // GlobalContext — built by global-context/ router, enriched with F-15 rules
+    ...globalContext,
 
     // MessageContext (per-client, per-message)
     sessionKey: `workspace:${workspaceId}:client:${clientId}`,
@@ -241,5 +263,27 @@ async function loadConversationState(
     .single()
 
   return data?.state ?? 'idle'
+}
+
+/**
+ * Load active communication rules from the communication_rules table.
+ * These are workspace-scoped instructions learned from staff edit patterns (F-15).
+ * Returns rules ordered by confidence (highest first), capped at 20.
+ */
+async function loadCommunicationRules(
+  supabase: SupabaseClient,
+  workspaceId: string,
+): Promise<string[]> {
+  const { data } = await supabase
+    .from('communication_rules')
+    .select('instruction, confidence')
+    .eq('workspace_id', workspaceId)
+    .eq('active', true)
+    .order('confidence', { ascending: false })
+    .limit(20)
+
+  return (data ?? []).map(
+    (r: { instruction: string; confidence: number }) => r.instruction,
+  )
 }
 

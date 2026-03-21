@@ -5,7 +5,7 @@ import { z } from 'zod'
 export const createNoteSchema = z.object({
   client_id: z.string().uuid(),
   content: z.string().min(1).max(10000),
-  source: z.enum(['manual', 'ai_extracted', 'merge_history']).default('manual'),
+  source: z.enum(['manual', 'ai_extracted', 'merge_history', 'conversation_update']).default('manual'),
 })
 
 export type CreateNote = z.infer<typeof createNoteSchema>
