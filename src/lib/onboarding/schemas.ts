@@ -23,7 +23,7 @@ export type OnboardingStatus = (typeof ONBOARDING_STATUSES)[number]
 export const startOnboardingSchema = z.object({
   owner_name: z.string().min(1).max(200),
   owner_phone: e164Schema,
-  owner_email: z.string().email().optional(),
+  owner_email: z.string().email(), // required — staff.email is NOT NULL
 })
 
 /** PUT /onboarding/:id/identity — set business identity */

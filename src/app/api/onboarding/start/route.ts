@@ -65,7 +65,7 @@ export async function POST(request: NextRequest) {
         workspace_id: wsId,
         full_name: owner_name,
         phone: owner_phone,
-        email: owner_email ?? null,
+        email: owner_email,
         role: 'owner',
       })
 

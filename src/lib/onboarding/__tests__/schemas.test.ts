@@ -20,17 +20,17 @@ describe('startOnboardingSchema', () => {
     const result = startOnboardingSchema.safeParse({
       owner_name: 'Alice',
       owner_phone: '+85291234567',
+      owner_email: 'alice@example.com',
     })
     expect(result.success).toBe(true)
   })
 
-  it('should accept optional email', () => {
+  it('should reject missing email (staff.email is NOT NULL)', () => {
     const result = startOnboardingSchema.safeParse({
       owner_name: 'Alice',
       owner_phone: '+85291234567',
-      owner_email: 'alice@example.com',
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBe(false)
   })
 
   it('should reject missing owner_name', () => {

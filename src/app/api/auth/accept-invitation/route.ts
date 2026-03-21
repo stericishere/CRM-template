@@ -186,7 +186,8 @@ export async function POST(request: NextRequest) {
       staff = data
     }
 
-    // 5. Mark invitation as accepted
+    // 5. Mark invitation as accepted — if this fails, roll back the staff
+    //    change to prevent inconsistent state (active member + pending invite).
     const { error: updateError } = await supabase
       .from('staff_invitations')
       .update({
@@ -196,8 +197,25 @@ export async function POST(request: NextRequest) {
       .eq('id', invitation.id)
 
     if (updateError) {
-      console.error('[POST /accept-invitation] Invitation update failed:', updateError.message)
-      // Staff record was created successfully, so log but don't fail
+      console.error('[POST /accept-invitation] Invitation update failed, rolling back staff:', updateError.message)
+      // Roll back: re-remove or delete the staff record we just created/reactivated
+      if (existingStaff) {
+        await supabase
+          .from('staff')
+          .update({ status: existingStaff.status, removed_at: new Date().toISOString() })
+          .eq('id', authUser.id)
+          .eq('workspace_id', invitation.workspace_id)
+      } else {
+        await supabase
+          .from('staff')
+          .delete()
+          .eq('id', authUser.id)
+          .eq('workspace_id', invitation.workspace_id)
+      }
+      return NextResponse.json(
+        { error: 'Failed to complete invitation acceptance' },
+        { status: 500 }
+      )
     }
 
     return NextResponse.json(
