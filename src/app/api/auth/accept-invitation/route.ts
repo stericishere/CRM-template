@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase/service'
+import { assertAuthenticated } from '@/lib/supabase/assert-workspace-member'
 import { z } from 'zod'
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
@@ -59,6 +60,11 @@ export async function GET(request: NextRequest) {
 // ──────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
   try {
+    // Require authenticated caller — token alone is not sufficient.
+    // The caller's email must match the invitation email.
+    const auth = await assertAuthenticated()
+    if (auth instanceof NextResponse) return auth
+
     let body: unknown
     try {
       body = await request.json()
@@ -103,25 +109,12 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // 2. Check if a Supabase Auth user exists with this email
-    const { data: userList, error: userError } = await supabase.auth.admin.listUsers()
-
-    if (userError) {
-      console.error('[POST /accept-invitation] User lookup failed:', userError.message)
+    // 2. Verify the authenticated caller's email matches the invitation
+    const authUser = auth.user
+    if (authUser.email?.toLowerCase() !== invitation.email.toLowerCase()) {
       return NextResponse.json(
-        { error: 'Failed to verify user account' },
-        { status: 500 }
-      )
-    }
-
-    const authUser = (userList?.users ?? []).find(
-      (u: { email?: string }) => u.email?.toLowerCase() === invitation.email.toLowerCase()
-    )
-
-    if (!authUser) {
-      return NextResponse.json(
-        { error: 'Please create an account first, then accept the invitation' },
-        { status: 400 }
+        { error: 'This invitation was sent to a different email address' },
+        { status: 403 }
       )
     }
 

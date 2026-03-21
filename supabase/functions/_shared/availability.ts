@@ -57,10 +57,12 @@ export interface AvailabilityParams {
 function parseTimeInTimezone(date: string, time: string, timezone: string): number {
   const [hours, minutes] = time.split(':').map(Number)
 
-  // Probe: UTC midnight of the requested calendar date.
-  // Formatting this through the timezone tells us what local time corresponds
-  // to UTC midnight, which gives us the timezone offset for that day.
-  const probe = new Date(`${date}T00:00:00Z`)
+  // Probe at the REQUESTED time, not midnight. On DST transition days the
+  // offset at 00:00 differs from the offset at (e.g.) 09:00, so probing at
+  // midnight shifts all later slots by one hour.
+  const probeHour = String(hours).padStart(2, '0')
+  const probeMin = String(minutes).padStart(2, '0')
+  const probe = new Date(`${date}T${probeHour}:${probeMin}:00Z`)
 
   const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,

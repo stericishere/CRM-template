@@ -17,10 +17,13 @@ export type InviteStaffInput = z.infer<typeof inviteStaffSchema>
 
 // --- Update ----------------------------------------------------------
 
+// Only allow setting status to 'active' or 'removed' via PATCH.
+// 'invited' is a system-managed state from the invitation flow —
+// owners should not be able to move real members into limbo.
 export const updateStaffSchema = z
   .object({
     role: staffRoleSchema.optional(),
-    status: staffStatusSchema.optional(),
+    status: z.enum(['active', 'removed']).optional(),
   })
   .refine((data) => data.role !== undefined || data.status !== undefined, {
     message: 'At least one field must be provided',

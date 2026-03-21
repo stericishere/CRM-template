@@ -182,12 +182,16 @@ async function processSignal(
     console.error(`${tag} signal update failed:`, sigUpdateErr.message)
   }
 
-  // 7. Upsert pattern recurrences for each pattern key
-  for (const patternKey of classification.pattern_keys) {
+  // 7. Upsert pattern recurrences for each pattern key with its own category
+  for (let i = 0; i < classification.pattern_keys.length; i++) {
+    const patternKey = classification.pattern_keys[i]
+    // Use the corresponding category if available, otherwise fall back to first
+    const category = classification.edit_categories[i] ?? primaryCategory
+
     const { error: rpcErr } = await supabase.rpc('upsert_pattern_recurrence', {
       p_workspace_id: signal.workspace_id,
       p_pattern_key: patternKey,
-      p_category: primaryCategory,
+      p_category: category,
       p_client_id: signal.client_id,
       p_signal_created_at: signal.created_at,
     })
@@ -197,9 +201,9 @@ async function processSignal(
     }
   }
 
-  // 8-10. Rule creation: immediate (always_do_this) or threshold-based
-  if (primaryPatternKey) {
-    await maybeCreateRule(supabase, signal, primaryPatternKey, primaryCategory, tag)
+  // 8-10. Rule creation: check ALL pattern keys, not just the first
+  for (const patternKey of classification.pattern_keys) {
+    await maybeCreateRule(supabase, signal, patternKey, primaryCategory, tag)
   }
 
   // 11. Log LLM usage (fire-and-log, non-blocking)

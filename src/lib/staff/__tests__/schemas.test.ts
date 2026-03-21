@@ -76,6 +76,11 @@ describe('updateStaffSchema', () => {
     const result = updateStaffSchema.safeParse({})
     expect(result.success).toBe(false)
   })
+
+  it('rejects status "invited" (system-managed, not settable by owner)', () => {
+    const result = updateStaffSchema.safeParse({ status: 'invited' })
+    expect(result.success).toBe(false)
+  })
 })
 
 describe('staffRoleSchema', () => {
