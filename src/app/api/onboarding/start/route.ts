@@ -56,14 +56,16 @@ export async function POST(request: NextRequest) {
 
     const wsId = (workspace as { id: string }).id
 
-    // 2. Create staff record for the owner
+    // 2. Create staff record for the owner — id MUST match the auth user
+    //    so that assertWorkspaceMember(workspaceId) passes on follow-up routes.
     const { error: staffError } = await supabase
       .from('staff')
       .insert({
+        id: auth.user.id,
         workspace_id: wsId,
         full_name: owner_name,
         phone: owner_phone,
-        email: owner_email ?? null,
+        email: owner_email,
         role: 'owner',
       })
 

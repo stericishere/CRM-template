@@ -233,10 +233,18 @@ serve(async (req) => {
           }
 
         case 'CLIENT_UPDATE': {
-          // Build changes object matching action-executor contract:
-          // executeClientUpdate reads payload.changes as Record<string, unknown>
+          // Map extraction field names to actual clients table columns.
+          // phone_number → phone; preferences.* → JSONB merge via preferences column.
           const changes: Record<string, unknown> = {}
-          changes[extraction.field] = extraction.after_value
+          const field = extraction.field
+          if (field === 'phone_number') {
+            changes['phone'] = extraction.after_value
+          } else if (field.startsWith('preferences.')) {
+            const prefKey = field.slice('preferences.'.length)
+            changes['preferences'] = { [prefKey]: extraction.after_value }
+          } else {
+            changes[field] = extraction.after_value
+          }
           return {
             workspace_id,
             client_id,
@@ -308,8 +316,8 @@ serve(async (req) => {
     console.error('[categorize-note] Error:', err)
 
     // ─── Error recovery: reset status based on retry count ────
+    // note_id is hoisted above the try block; do NOT re-parse the consumed body.
     try {
-      const { note_id } = await req.clone().json().catch(() => ({ note_id: null }))
       if (note_id) {
         const supabase = getSupabaseClient()
 

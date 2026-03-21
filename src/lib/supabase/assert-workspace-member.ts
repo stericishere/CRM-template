@@ -44,6 +44,7 @@ export async function assertWorkspaceMember(
     .select('id')
     .eq('id', authed.user.id)
     .eq('workspace_id', workspaceId)
+    .eq('status', 'active')
     .maybeSingle()
 
   if (!staffRow) {

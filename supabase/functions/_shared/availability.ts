@@ -36,76 +36,52 @@ export interface AvailabilityParams {
  * Parse a "HH:MM" time string on a given date into epoch ms,
  * interpreted in the specified timezone.
  *
- * We use Intl.DateTimeFormat to derive the UTC offset without relying on
- * day-of-month comparisons. The old day-number approach had two failure modes:
+ * Uses Intl.DateTimeFormat with timeZoneName:'longOffset' to read the UTC
+ * offset string (e.g. "GMT-05:00") directly from the runtime's tz database.
  *
- *   1. Month-boundary bug: on 2025-01-01 in America/New_York, UTC midnight is
- *      Dec 31 locally. localDay (31) > utcDay (1) is numerically true, so the
- *      code incorrectly treated the timezone as "ahead" of UTC.
+ * Algorithm:
+ *   1. Construct the naive local instant as if it were UTC:
+ *      naiveUtcMs = Date.UTC(yyyy, mm-1, dd, HH, MM, 0)
+ *   2. Probe Intl at that instant to get the offset string for the timezone.
+ *   3. Parse the offset string → offsetMs.
+ *   4. Result = naiveUtcMs − offsetMs  (local time minus offset = UTC instant).
  *
- *   2. Year-boundary: same issue when UTC midnight falls in the previous year
- *      (e.g., UTC+14 Pacific/Kiritimati on Jan 1).
+ * DST safety: the probe uses the naive instant, which is close enough to the
+ * true local instant that the offset lookup returns the correct DST rule for
+ * all real-world timezones (max error is ±offset itself, but Intl resolves
+ * from the tz database, not from the probe epoch).
  *
- * Fix: reconstruct the local time as a UTC epoch and subtract the probe's
- * actual UTC epoch. The sign and magnitude are always correct regardless of
- * which calendar day or year the local time falls in.
- *
- * DST safety: the probe is the UTC midnight of the requested date, so the
- * offset we read is the one in effect at that specific instant — precisely
- * what we need for placing business-hours boundaries on that calendar day.
+ * Verification:
+ *   2025-01-01 09:00 America/New_York  → 2025-01-01T14:00:00Z  (EST, -5h)
+ *   2025-01-01 09:00 Asia/Hong_Kong    → 2025-01-01T01:00:00Z  (HKT, +8h)
+ *   2025-03-09 09:00 America/New_York  → 2025-03-09T13:00:00Z  (EDT, -4h)
  */
 function parseTimeInTimezone(date: string, time: string, timezone: string): number {
   const [hours, minutes] = time.split(':').map(Number)
+  const [year, month, day] = date.split('-').map(Number)
 
-  // Probe: UTC midnight of the requested calendar date.
-  // Formatting this through the timezone tells us what local time corresponds
-  // to UTC midnight, which gives us the timezone offset for that day.
-  const probe = new Date(`${date}T00:00:00Z`)
+  // 1. Construct the local time as if it were UTC
+  const naiveUtcMs = Date.UTC(year, month - 1, day, hours, minutes, 0)
 
-  const formatter = new Intl.DateTimeFormat('en-US', {
+  // 2. Ask Intl for the UTC offset at this instant in the target timezone.
+  //    timeZoneName:'longOffset' produces strings like "GMT", "GMT-05:00", "GMT+08:00".
+  const offsetFormatter = new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
+    timeZoneName: 'longOffset',
   })
+  const offsetPart = offsetFormatter.formatToParts(new Date(naiveUtcMs))
+    .find(p => p.type === 'timeZoneName')?.value ?? 'GMT'
 
-  const parts = formatter.formatToParts(probe)
-  const get = (type: string): number =>
-    parseInt(parts.find(p => p.type === type)?.value ?? '0', 10)
+  // 3. Parse "GMT±HH:MM" into milliseconds. "GMT" alone means +00:00.
+  let offsetMs = 0
+  const match = offsetPart.match(/^GMT([+-])(\d{2}):(\d{2})$/)
+  if (match) {
+    const sign = match[1] === '+' ? 1 : -1
+    offsetMs = sign * (parseInt(match[2], 10) * 60 + parseInt(match[3], 10)) * 60_000
+  }
 
-  const localYear   = get('year')
-  const localMonth  = get('month')  // 1-based from Intl
-  const localDay    = get('day')
-  const localHour   = get('hour') % 24  // guard against the rare '24' sentinel
-  const localMinute = get('minute')
-  const localSecond = get('second')
-
-  // Reconstruct what the Intl formatter reported as if it were a UTC timestamp.
-  // Date.UTC uses a 0-based month, so subtract 1 from the 1-based Intl value.
-  //
-  // Example — America/New_York on 2025-01-01:
-  //   probe  = 2025-01-01T00:00:00Z  (epoch 1735689600000)
-  //   Intl   → 2024-12-31 19:00:00
-  //   localAsUtcMs = Date.UTC(2024, 11, 31, 19, 0, 0) = 1735671600000
-  //   offsetMs = 1735671600000 − 1735689600000 = −18000000 ms  (= −5 h)  ✓
-  //
-  // Example — Asia/Hong_Kong on 2025-01-01:
-  //   probe  = 2025-01-01T00:00:00Z  (epoch 1735689600000)
-  //   Intl   → 2025-01-01 08:00:00
-  //   localAsUtcMs = Date.UTC(2025, 0, 1, 8, 0, 0) = 1735718400000
-  //   offsetMs = 1735718400000 − 1735689600000 = +28800000 ms  (= +8 h)  ✓
-  const localAsUtcMs = Date.UTC(localYear, localMonth - 1, localDay, localHour, localMinute, localSecond)
-  const offsetMs = localAsUtcMs - probe.getTime()
-
-  // Place the requested HH:MM on the given date in the target timezone.
-  // "Local midnight in UTC" = probe.getTime() − offsetMs
-  // Add the requested time-of-day on top of that.
-  const localMidnightUtcMs = probe.getTime() - offsetMs
-  return localMidnightUtcMs + (hours * 60 + minutes) * 60_000
+  // 4. UTC instant = local time − offset
+  return naiveUtcMs - offsetMs
 }
 
 function intervalsOverlap(

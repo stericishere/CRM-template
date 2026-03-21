@@ -130,6 +130,21 @@ async function executeClientUpdate(
   action: ProposedAction
 ): Promise<ExecutionResult> {
   const changes = action.payload.changes as Record<string, unknown> ?? {}
+
+  // Handle preferences JSONB merge: if changes.preferences is an object,
+  // read current preferences and merge rather than overwriting.
+  if (changes.preferences && typeof changes.preferences === 'object') {
+    const { data: client } = await supabase
+      .from('clients')
+      .select('preferences')
+      .eq('id', action.clientId)
+      .eq('workspace_id', action.workspaceId)
+      .single()
+
+    const current = (client?.preferences as Record<string, unknown>) ?? {}
+    changes.preferences = { ...current, ...(changes.preferences as Record<string, unknown>) }
+  }
+
   const { error } = await supabase
     .from('clients')
     .update(changes)
