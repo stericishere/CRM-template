@@ -127,8 +127,17 @@ export async function POST(
       )
     }
 
+    // Expire any stale pending invitations so the partial unique index
+    // (workspace_id, email WHERE status='pending') doesn't block re-invites.
+    await supabase
+      .from('staff_invitations')
+      .update({ status: 'expired' })
+      .eq('workspace_id', workspaceId)
+      .eq('email', email)
+      .eq('status', 'pending')
+      .lt('expires_at', new Date().toISOString())
+
     // Check for existing pending AND non-expired invitation.
-    // Expired invites should not block re-invitation.
     const { data: existingInvitation } = await supabase
       .from('staff_invitations')
       .select('id')

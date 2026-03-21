@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
 // POST /api/auth/accept-invitation
 //
 // Accept a staff invitation using the token.
-// Public endpoint — the token itself acts as authentication.
+// Requires authenticated caller whose email matches the invitation.
 // Body: { token: string }
 //
 // Flow:
