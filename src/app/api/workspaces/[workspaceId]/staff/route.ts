@@ -155,6 +155,18 @@ export async function POST(
       )
     }
 
+    // Provision a Supabase Auth account if the invitee doesn't have one.
+    // inviteUserByEmail sends a magic link that creates the account + logs them in.
+    // If the user already exists, this is a no-op (Supabase returns the existing user).
+    const { error: authInviteError } = await supabase.auth.admin.inviteUserByEmail(email, {
+      data: { invited_to_workspace: workspaceId, role },
+    })
+    if (authInviteError) {
+      // Log but don't block — user may already exist, or email delivery may fail.
+      // The invitation record is still created so the flow can complete via direct POST.
+      console.warn('[POST /staff] Auth invite email failed (non-blocking):', authInviteError.message)
+    }
+
     // Generate token and insert invitation
     const token = generateInvitationToken()
     const expiresAt = new Date(Date.now() + INVITATION_EXPIRY_DAYS * 24 * 60 * 60 * 1000).toISOString()

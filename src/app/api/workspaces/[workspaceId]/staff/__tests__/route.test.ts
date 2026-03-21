@@ -31,7 +31,11 @@ const mockFrom = vi.fn(() => ({
   update: mockUpdate,
 }))
 
-const mockServiceClient = { from: mockFrom }
+const mockInviteUserByEmail = vi.fn().mockResolvedValue({ error: null })
+const mockServiceClient = {
+  from: mockFrom,
+  auth: { admin: { inviteUserByEmail: mockInviteUserByEmail } },
+}
 
 // ── Mock external dependencies ──────────────────────────────────────
 const mockAssertWorkspaceMember = vi.fn()
