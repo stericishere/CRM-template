@@ -1,5 +1,8 @@
 import { randomBytes } from 'crypto'
 
+/** Invitation validity period in days */
+export const INVITATION_EXPIRY_DAYS = 7
+
 /**
  * Generate a cryptographically-secure invitation token (64 hex chars / 32 bytes).
  */

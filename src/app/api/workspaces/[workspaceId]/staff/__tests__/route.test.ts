@@ -53,6 +53,7 @@ const mockBuildInvitationUrl = vi.fn()
 vi.mock('@/lib/staff/invitation', () => ({
   generateInvitationToken: (...args: unknown[]) => mockGenerateInvitationToken(...args),
   buildInvitationUrl: (...args: unknown[]) => mockBuildInvitationUrl(...args),
+  INVITATION_EXPIRY_DAYS: 7,
 }))
 
 // ── Import route handlers under test (after all mocks) ──────────────

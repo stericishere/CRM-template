@@ -6,6 +6,7 @@ import { inviteStaffSchema } from '@/lib/staff/schemas'
 import {
   generateInvitationToken,
   buildInvitationUrl,
+  INVITATION_EXPIRY_DAYS,
 } from '@/lib/staff/invitation'
 
 // ──────────────────────────────────────────────────────────
@@ -156,7 +157,7 @@ export async function POST(
 
     // Generate token and insert invitation
     const token = generateInvitationToken()
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() // 7 days
+    const expiresAt = new Date(Date.now() + INVITATION_EXPIRY_DAYS * 24 * 60 * 60 * 1000).toISOString()
 
     const { data: invitation, error } = await supabase
       .from('staff_invitations')
