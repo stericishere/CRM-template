@@ -46,8 +46,15 @@ serve(async (req) => {
     return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405 })
   }
 
+  // Hoist note_id so the catch block can use it for error recovery
+  // without re-reading the consumed request body
+  let note_id: string | null = null
+
   try {
-    const { note_id, workspace_id, client_id } = await req.json()
+    const body = await req.json()
+    note_id = body.note_id
+    const workspace_id = body.workspace_id
+    const client_id = body.client_id
 
     if (!note_id || !workspace_id || !client_id) {
       return new Response(
@@ -63,7 +70,7 @@ serve(async (req) => {
     // If no rows returned, another worker already claimed it — skip.
     const { data: note, error: lockError } = await supabase
       .from('notes')
-      .update({ extraction_status: 'processing' })
+      .update({ extraction_status: 'processing', updated_at: new Date().toISOString() })
       .eq('id', note_id)
       .eq('extraction_status', 'pending')
       .select('*')

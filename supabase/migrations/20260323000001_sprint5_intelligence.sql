@@ -12,7 +12,8 @@ ALTER TABLE notes
   ADD COLUMN IF NOT EXISTS extraction_status TEXT NOT NULL DEFAULT 'pending',
   ADD COLUMN IF NOT EXISTS extraction_retry_count INTEGER NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS extraction_completed_at TIMESTAMPTZ,
-  ADD COLUMN IF NOT EXISTS extraction_error TEXT;
+  ADD COLUMN IF NOT EXISTS extraction_error TEXT,
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 -- Constraint for extraction_status values (idempotent via DO block)
 -- 'processing' state is used as an optimistic lock to prevent duplicate extraction
@@ -109,7 +110,7 @@ SELECT cron.schedule(
   SET extraction_status = 'pending'
   WHERE extraction_status = 'processing'
     AND extraction_completed_at IS NULL
-    AND created_at < now() - interval '5 minutes';
+    AND updated_at < now() - interval '5 minutes';
   $$
 );
 

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // POST /api/onboarding/:workspaceId/activate
@@ -21,6 +22,8 @@ export async function POST(
 ) {
   try {
     const { workspaceId } = await params
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     const efResponse = await fetch(`${SUPABASE_URL}/functions/v1/onboarding-activate`, {
       method: 'POST',

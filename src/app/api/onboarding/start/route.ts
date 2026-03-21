@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { startOnboardingSchema } from '@/lib/onboarding/schemas'
 import { getServiceClient } from '@/lib/supabase/service'
+import { assertAuthenticated } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // POST /api/onboarding/start
@@ -15,6 +16,9 @@ import { getServiceClient } from '@/lib/supabase/service'
 // ──────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
   try {
+    const auth = await assertAuthenticated()
+    if (auth instanceof NextResponse) return auth
+
     let body: unknown
     try {
       body = await request.json()

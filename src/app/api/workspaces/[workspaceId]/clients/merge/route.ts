@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { mergeClientsSchema } from '@/lib/notes/schemas'
 import { getServiceClient } from '@/lib/supabase/service'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // POST /api/workspaces/:workspaceId/clients/merge
@@ -22,6 +23,9 @@ export async function POST(
 ) {
   try {
     const { workspaceId } = await params
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     let body: unknown
     try {

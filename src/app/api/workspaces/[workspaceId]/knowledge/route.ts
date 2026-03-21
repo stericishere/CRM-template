@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createKnowledgeSchema } from '@/lib/notes/schemas'
 import { getServiceClient } from '@/lib/supabase/service'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // GET /api/workspaces/:workspaceId/knowledge
@@ -14,6 +15,10 @@ export async function GET(
 ) {
   try {
     const { workspaceId } = await params
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
+
     const url = request.nextUrl
     const source = url.searchParams.get('source')
 
@@ -68,6 +73,9 @@ export async function POST(
 ) {
   try {
     const { workspaceId } = await params
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     let body: unknown
     try {
@@ -137,6 +145,10 @@ export async function DELETE(
 ) {
   try {
     const { workspaceId } = await params
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
+
     const url = request.nextUrl
     const source = url.searchParams.get('source')
 

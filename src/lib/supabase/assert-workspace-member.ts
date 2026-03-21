@@ -3,6 +3,26 @@ import { createClient } from '@/lib/supabase/server'
 import type { User } from '@supabase/supabase-js'
 
 /**
+ * Verify the user is authenticated (logged in).
+ *
+ * Returns `{ user }` on success, or a 401 `NextResponse` on failure.
+ *
+ *   const auth = await assertAuthenticated()
+ *   if (auth instanceof NextResponse) return auth
+ *   // auth.user is now available
+ */
+export async function assertAuthenticated(): Promise<{ user: User } | NextResponse> {
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+
+  if (!user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  return { user }
+}
+
+/**
  * Verify the authenticated user belongs to the given workspace.
  *
  * Returns `{ user, staffId }` on success, or a `NextResponse` (401/403)
@@ -15,17 +35,14 @@ import type { User } from '@supabase/supabase-js'
 export async function assertWorkspaceMember(
   workspaceId: string
 ): Promise<{ user: User; staffId: string } | NextResponse> {
+  const authed = await assertAuthenticated()
+  if (authed instanceof NextResponse) return authed
+
   const authClient = await createClient()
-  const { data: { user } } = await authClient.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
   const { data: staffRow } = await authClient
     .from('staff')
     .select('id')
-    .eq('id', user.id)
+    .eq('id', authed.user.id)
     .eq('workspace_id', workspaceId)
     .maybeSingle()
 
@@ -33,5 +50,5 @@ export async function assertWorkspaceMember(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
-  return { user, staffId: staffRow.id as string }
+  return { user: authed.user, staffId: staffRow.id as string }
 }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServiceClient } from '@/lib/supabase/service'
 import { verifyOAuthState } from '../route'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // GET /api/auth/google-calendar/callback
@@ -47,15 +48,24 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    // Verify HMAC-signed state to prevent CSRF / workspace_id tampering
+    // Verify HMAC-signed state to prevent CSRF / workspace_id tampering.
+    // Fails when the signing key rotated between sign and verify (e.g. process
+    // restart on serverless) — user just needs to reconnect.
     const state = verifyOAuthState(stateParam)
     if (!state || !state.workspace_id) {
       console.error('[GET /auth/google-calendar/callback] Invalid or tampered OAuth state')
       return NextResponse.redirect(
-        `${APP_URL}/settings?calendar_error=invalid_state`
+        `${APP_URL}/settings?calendar_error=connection_expired&calendar_action=reconnect`
       )
     }
     const workspaceId = state.workspace_id as string
+
+    const memberAuth = await assertWorkspaceMember(workspaceId)
+    if (memberAuth instanceof NextResponse) {
+      return NextResponse.redirect(
+        `${APP_URL}/settings?calendar_error=unauthorized`
+      )
+    }
 
     // Exchange authorization code for tokens
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
@@ -74,7 +84,7 @@ export async function GET(request: NextRequest) {
       const errText = await tokenResponse.text().catch(() => 'Unknown error')
       console.error('[GET /auth/google-calendar/callback] Token exchange failed:', errText)
       return NextResponse.redirect(
-        `${APP_URL}/settings?calendar_error=token_exchange_failed`
+        `${APP_URL}/settings?calendar_error=token_exchange_failed&calendar_action=reconnect`
       )
     }
 
