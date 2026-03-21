@@ -43,9 +43,11 @@ export function useInboxRealtime({
 
   // Stable callback refs to avoid re-subscribing on callback identity change
   const onNewMessageRef = useRef(onNewMessage)
-  onNewMessageRef.current = onNewMessage
   const onDraftReadyRef = useRef(onDraftReady)
-  onDraftReadyRef.current = onDraftReady
+  useEffect(() => {
+    onNewMessageRef.current = onNewMessage
+    onDraftReadyRef.current = onDraftReady
+  })
 
   // Track last-polled IDs to prevent replaying the same record
   const lastPolledMsgIdRef = useRef<string | null>(null)

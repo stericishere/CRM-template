@@ -13,6 +13,7 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
     // Project-specific ignores:
+    ".worktrees/**",
     "baileys-server/**",
     "tmp-scaffold/**",
     "supabase/**",

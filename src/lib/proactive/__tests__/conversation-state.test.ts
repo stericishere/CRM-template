@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { TRANSITION_MAP, getNextState } from '../conversation-state'
+import type { ConversationState, ConversationEvent } from '../conversation-state'
 
 describe('ConversationStateMachine', () => {
   describe('getNextState', () => {
@@ -44,11 +45,11 @@ describe('ConversationStateMachine', () => {
     })
 
     it('should throw on unknown state', () => {
-      expect(() => getNextState('bogus' as any, 'staff_sends')).toThrow('Invalid transition')
+      expect(() => getNextState('bogus' as ConversationState, 'staff_sends')).toThrow('Invalid transition')
     })
 
     it('should throw on unknown event', () => {
-      expect(() => getNextState('idle', 'bogus' as any)).toThrow('Invalid transition')
+      expect(() => getNextState('idle', 'bogus' as ConversationEvent)).toThrow('Invalid transition')
     })
   })
 

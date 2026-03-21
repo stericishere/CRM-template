@@ -20,7 +20,9 @@ export function useNotificationRealtime(
 ) {
   // Stable callback ref to avoid re-subscribing on callback identity change
   const onNotificationRef = useRef(onNotification)
-  onNotificationRef.current = onNotification
+  useEffect(() => {
+    onNotificationRef.current = onNotification
+  })
 
   useEffect(() => {
     const supabase = createClient()

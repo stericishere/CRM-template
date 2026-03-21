@@ -80,11 +80,26 @@ export function useUnreadCount({
   // Fetch on mount and when workspaceId changes
   useEffect(() => {
     mountedRef.current = true
-    void fetchUnreadCounts()
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(
+          `/api/notifications/unread-count?workspace_id=${encodeURIComponent(workspaceId)}`
+        )
+        if (!res.ok || cancelled) return
+        const data: { conversations: ConversationUnread[] } = await res.json()
+        if (!cancelled && mountedRef.current) {
+          setConversations(data.conversations)
+        }
+      } catch (err) {
+        if (!cancelled) console.error('[useUnreadCount] fetch error', err)
+      }
+    })()
     return () => {
+      cancelled = true
       mountedRef.current = false
     }
-  }, [fetchUnreadCounts])
+  }, [workspaceId])
 
   const incrementForConversation = useCallback(
     (conversationId: string) => {
