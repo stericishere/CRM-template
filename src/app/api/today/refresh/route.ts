@@ -94,7 +94,7 @@ export async function POST(request: NextRequest) {
 
     if (logError) {
       console.error('[POST /today/refresh] Rate limit check failed:', logError.message)
-      // Fail open — allow the refresh if we can't check the log
+      return NextResponse.json({ error: 'Service temporarily unavailable' }, { status: 503 })
     }
 
     if (recentRun) {

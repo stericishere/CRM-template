@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // POST /api/workspaces/:workspaceId/knowledge/upload
@@ -33,6 +34,9 @@ export async function POST(
 ) {
   try {
     const { workspaceId } = await params
+
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     let formData: FormData
     try {
@@ -97,7 +101,7 @@ export async function POST(
       const errText = await efResponse.text().catch(() => 'Unknown error')
       console.error('[POST /knowledge/upload] Embed failed:', efResponse.status, errText)
       return NextResponse.json(
-        { error: 'Failed to process and embed file', details: errText },
+        { error: 'Failed to process and embed file' },
         { status: 500 }
       )
     }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // POST /api/onboarding/:workspaceId/whatsapp/refresh-qr
@@ -15,6 +16,8 @@ export async function POST(
 ) {
   try {
     const { workspaceId } = await params
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     const response = await fetch(`${BAILEYS_URL}/sessions/${workspaceId}/init`, {
       method: 'POST',

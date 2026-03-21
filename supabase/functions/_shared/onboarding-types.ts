@@ -40,7 +40,7 @@ export interface InstagramScrapeData {
 export interface OnboardingWorkspace {
   id: string
   business_name: string | null
-  vertical: string | null
+  vertical_type: string | null
   timezone: string | null
   knowledge_base: string | null
   whatsapp_connection_status: string

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { getServiceClient } from '@/lib/supabase/service'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // POST /api/auth/google-calendar/disconnect
@@ -32,6 +33,9 @@ export async function POST(request: NextRequest) {
     }
 
     const { workspace_id } = parsed.data
+
+    const auth = await assertWorkspaceMember(workspace_id)
+    if (auth instanceof NextResponse) return auth
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped service client
     const supabase = getServiceClient() as any

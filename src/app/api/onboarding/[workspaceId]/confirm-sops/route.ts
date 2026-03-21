@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { confirmSopsSchema } from '@/lib/onboarding/schemas'
 import { getServiceClient } from '@/lib/supabase/service'
+import { assertWorkspaceMember } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // PUT /api/onboarding/:workspaceId/confirm-sops
@@ -16,6 +17,8 @@ export async function PUT(
 ) {
   try {
     const { workspaceId } = await params
+    const auth = await assertWorkspaceMember(workspaceId)
+    if (auth instanceof NextResponse) return auth
 
     let body: unknown
     try {
