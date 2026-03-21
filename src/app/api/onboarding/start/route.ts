@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { startOnboardingSchema } from '@/lib/onboarding/schemas'
 import { getServiceClient } from '@/lib/supabase/service'
-import { createClient } from '@/lib/supabase/server'
+import { assertAuthenticated } from '@/lib/supabase/assert-workspace-member'
 
 // ──────────────────────────────────────────────────────────
 // POST /api/onboarding/start
@@ -16,11 +16,8 @@ import { createClient } from '@/lib/supabase/server'
 // ──────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
   try {
-    const authClient = await createClient()
-    const { data: { user } } = await authClient.auth.getUser()
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    const auth = await assertAuthenticated()
+    if (auth instanceof NextResponse) return auth
 
     let body: unknown
     try {
